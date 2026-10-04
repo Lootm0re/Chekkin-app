@@ -17,11 +17,10 @@ class _MapScreenState extends State<MapScreen> {
   Position? currentPosition;
   Set<Marker> markers = {};
 
+  String? nearbyEligiblePlaceId;
   String? nearbyEligiblePlaceName;
-  double? nearbyEligiblePlaceLat;
-  double? nearbyEligiblePlaceLng;
-  List<String> nearbyEligiblePlaceTypes = [];
   bool isCheckingIn = false;
+  bool isLoadingPlaces = false;
 
   String? locationError;
   bool locationPermanentlyDenied = false;
@@ -30,6 +29,12 @@ class _MapScreenState extends State<MapScreen> {
   final FirebaseFunctions functions = FirebaseFunctions.instance;
 
   static const double checkInRangeMeters = 22;
+
+  // Hides Google's own place icons: tapping them opens Google's info popup,
+  // which the app can't hook into. The app shows check-in places as markers.
+  static const String _hidePointsOfInterestStyle =
+      '[{"featureType":"poi","elementType":"labels","stylers":[{"visibility":"off"}]},'
+      '{"featureType":"transit","elementType":"labels.icon","stylers":[{"visibility":"off"}]}]';
 
   @override
   void initState() {
@@ -68,30 +73,63 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
+  /// Shows check-in eligible places near [position] as markers. The server
+  /// looks them up with the Places API and filters out ineligible ones.
   Future<void> _loadNearbyPlaces(Position position) async {
-    List<Map<String, dynamic>> nearbyPlaces = [
-      {'name': 'City Museum', 'lat': position.latitude + 0.001, 'lng': position.longitude + 0.001, 'types': ['museum']},
-      {'name': 'Riverside Cafe', 'lat': position.latitude - 0.001, 'lng': position.longitude + 0.002, 'types': ['cafe']},
-    ];
+    setState(() => isLoadingPlaces = true);
+    try {
+      final response = await functions.httpsCallable('nearbyPlaces').call({
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+      });
+      if (!mounted) return;
 
-    Set<Marker> newMarkers = {};
-    for (var place in nearbyPlaces) {
-      newMarkers.add(
-        Marker(
-          markerId: MarkerId(place['name']),
-          position: LatLng(place['lat'], place['lng']),
-          infoWindow: InfoWindow(title: place['name']),
-          onTap: () => _selectPlace(place['name'], place['lat'], place['lng'], List<String>.from(place['types'])),
-        ),
-      );
+      List places = response.data['places'];
+      Set<Marker> newMarkers = {};
+      for (var place in places) {
+        String id = place['id'];
+        String name = place['name'];
+        newMarkers.add(
+          Marker(
+            markerId: MarkerId(id),
+            position: LatLng((place['latitude'] as num).toDouble(), (place['longitude'] as num).toDouble()),
+            infoWindow: InfoWindow(title: name),
+            onTap: () => _selectPlace(id, name, (place['latitude'] as num).toDouble(), (place['longitude'] as num).toDouble()),
+          ),
+        );
+      }
+
+      setState(() => markers = newMarkers);
+      if (newMarkers.isEmpty) {
+        _showSnackBar('No check-in places found nearby.');
+      }
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('Loading nearby places failed: [${e.code}] ${e.message}');
+      _showSnackBar(e.message ?? 'Couldn\'t load nearby places.');
+    } catch (e) {
+      debugPrint('Loading nearby places failed: $e');
+      _showSnackBar('Couldn\'t load nearby places. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => isLoadingPlaces = false);
     }
-
-    setState(() {
-      markers = newMarkers;
-    });
   }
 
-  void _selectPlace(String placeName, double placeLat, double placeLng, List<String> placeTypes) {
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _selectPlace(String placeId, String placeName, double placeLat, double placeLng) async {
+    // You may have walked here since the map opened, so measure from where
+    // you are now.
+    try {
+      Position position = await getPositionWithPermission();
+      if (!mounted) return;
+      setState(() => currentPosition = position);
+    } catch (e) {
+      debugPrint('Refreshing location failed: $e');
+    }
+
     double distance = Geolocator.distanceBetween(
       currentPosition!.latitude,
       currentPosition!.longitude,
@@ -101,37 +139,32 @@ class _MapScreenState extends State<MapScreen> {
 
     if (distance <= checkInRangeMeters) {
       setState(() {
+        nearbyEligiblePlaceId = placeId;
         nearbyEligiblePlaceName = placeName;
-        nearbyEligiblePlaceLat = placeLat;
-        nearbyEligiblePlaceLng = placeLng;
-        nearbyEligiblePlaceTypes = placeTypes;
       });
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Too far away - get within ${checkInRangeMeters.toInt()}m to check in '
-            '(currently ${distance.toStringAsFixed(0)}m away)',
-          ),
-        ),
+      setState(() {
+        nearbyEligiblePlaceId = null;
+        nearbyEligiblePlaceName = null;
+      });
+      _showSnackBar(
+        'Too far away - get within ${checkInRangeMeters.toInt()}m to check in '
+        '(currently ${distance.toStringAsFixed(0)}m away)',
       );
     }
   }
 
   void _handleCheckIn() async {
-    if (nearbyEligiblePlaceName == null || isCheckingIn) return;
+    if (nearbyEligiblePlaceId == null || isCheckingIn) return;
 
     setState(() => isCheckingIn = true);
 
     try {
       HttpsCallable callable = functions.httpsCallable('performCheckIn');
       final response = await callable.call({
-        'locationId': nearbyEligiblePlaceName,
+        'placeId': nearbyEligiblePlaceId,
         'deviceLatitude': currentPosition!.latitude,
         'deviceLongitude': currentPosition!.longitude,
-        'placeLatitude': nearbyEligiblePlaceLat,
-        'placeLongitude': nearbyEligiblePlaceLng,
-        'placeTypes': nearbyEligiblePlaceTypes,
       });
 
       if (!mounted) return;
@@ -146,7 +179,7 @@ class _MapScreenState extends State<MapScreen> {
         try {
           HttpsCallable buddyCallable = functions.httpsCallable('attemptBuddyCheckIn');
           final buddyResponse = await buddyCallable.call({
-            'locationId': nearbyEligiblePlaceName,
+            'locationId': nearbyEligiblePlaceId,
             'friendUsername': buddyUsername,
           });
 
@@ -182,6 +215,7 @@ class _MapScreenState extends State<MapScreen> {
       if (mounted) {
         setState(() {
           isCheckingIn = false;
+          nearbyEligiblePlaceId = null;
           nearbyEligiblePlaceName = null;
           buddyUsernameController.clear();
         });
@@ -227,7 +261,18 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Check In')),
+      appBar: AppBar(
+        title: const Text('Check In'),
+        actions: [
+          IconButton(
+            tooltip: 'Find places near me',
+            icon: isLoadingPlaces
+                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh),
+            onPressed: isLoadingPlaces ? null : _getUserLocation,
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           GoogleMap(
@@ -236,6 +281,7 @@ class _MapScreenState extends State<MapScreen> {
               zoom: 15,
             ),
             myLocationEnabled: true,
+            style: _hidePointsOfInterestStyle,
             markers: markers,
             onMapCreated: (controller) => mapController = controller,
           ),
