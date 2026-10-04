@@ -43,6 +43,7 @@ class _AuthScreenState extends State<AuthScreen> {
     } on FirebaseException catch (e) {
       // FirebaseAuthException extends FirebaseException, so this covers
       // both auth errors and Firestore errors (e.g. permission-denied).
+      debugPrint('Auth submit failed: [${e.plugin}/${e.code}] ${e.message}');
       _showError(_friendlyErrorMessage(e.code));
     } on LocationAccessException catch (e) {
       _showError(e.message);

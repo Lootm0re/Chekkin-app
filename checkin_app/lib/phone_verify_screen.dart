@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 class PhoneVerifyScreen extends StatefulWidget {
   const PhoneVerifyScreen({super.key});
@@ -24,28 +24,30 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
       errorMessage = null;
     });
 
-    await FirebaseAuth.instance.verifyPhoneNumber(
-      phoneNumber: phoneController.text.trim(),
-      verificationCompleted: (PhoneAuthCredential credential) async {
-        await _linkPhoneCredential(credential);
-      },
-      verificationFailed: (FirebaseAuthException e) {
-        setState(() {
-          errorMessage = _friendlyError(e.code);
-          isLoading = false;
-        });
-      },
-      codeSent: (String id, int? resendToken) {
-        setState(() {
+    try {
+      await FirebaseAuth.instance.verifyPhoneNumber(
+        phoneNumber: phoneController.text.trim(),
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          await _linkPhoneCredential(credential);
+        },
+        verificationFailed: (FirebaseAuthException e) {
+          _showError(e, 'Sending verification code failed');
+        },
+        codeSent: (String id, int? resendToken) {
+          if (!mounted) return;
+          setState(() {
+            verificationId = id;
+            codeSent = true;
+            isLoading = false;
+          });
+        },
+        codeAutoRetrievalTimeout: (String id) {
           verificationId = id;
-          codeSent = true;
-          isLoading = false;
-        });
-      },
-      codeAutoRetrievalTimeout: (String id) {
-        verificationId = id;
-      },
-    );
+        },
+      );
+    } catch (e) {
+      _showError(e, 'Sending verification code failed');
+    }
   }
 
   Future<void> _verifyCode() async {
@@ -62,35 +64,72 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
         smsCode: codeController.text.trim(),
       );
       await _linkPhoneCredential(credential);
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        errorMessage = _friendlyError(e.code);
-        isLoading = false;
-      });
+    } catch (e) {
+      _showError(e, 'Verifying code failed');
     }
   }
 
   Future<void> _linkPhoneCredential(PhoneAuthCredential credential) async {
     try {
       User user = FirebaseAuth.instance.currentUser!;
-      await user.linkWithCredential(credential);
+      bool hasPhone = user.providerData.any((p) => p.providerId == PhoneAuthProvider.PROVIDER_ID);
+      if (hasPhone) {
+        // A phone was linked on an earlier attempt that didn't finish.
+        await user.updatePhoneNumber(credential);
+      } else {
+        await user.linkWithCredential(credential);
+      }
 
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-        'phoneVerified': true,
-        'phoneNumber': phoneController.text.trim(),
-      });
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        errorMessage = _friendlyError(e.code);
-        isLoading = false;
-      });
+      // The server checks the number isn't used by another account and sets
+      // phoneVerified (clients aren't allowed to). AuthGate moves on once the
+      // profile updates.
+      try {
+        await FirebaseFunctions.instance.httpsCallable('confirmPhoneVerified').call();
+      } on FirebaseFunctionsException catch (e) {
+        if (e.code == 'already-exists') {
+          // Free this account to try a different number.
+          await user.unlink(PhoneAuthProvider.PROVIDER_ID);
+        }
+        rethrow;
+      }
+    } catch (e) {
+      _showError(e, 'Linking phone number failed');
     }
+  }
+
+  /// Logs the real error to the console (browser devtools on web) and shows
+  /// a friendly version of it on screen.
+  void _showError(Object error, String context) {
+    String code = 'unknown';
+    if (error is FirebaseException) {
+      code = error.code;
+      debugPrint('$context: [${error.plugin}/${error.code}] ${error.message}');
+    } else {
+      debugPrint('$context: $error');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      errorMessage = _friendlyError(code);
+      isLoading = false;
+    });
   }
 
   String _friendlyError(String code) {
     switch (code) {
+      case 'already-exists':
       case 'credential-already-in-use':
-        return 'This phone number is already linked to another account.';
+        return 'This phone number is already used by another account.';
+      case 'operation-not-allowed':
+        return 'Phone verification isn\'t available for this number\'s region yet.';
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait a while and try again.';
+      case 'captcha-check-failed':
+      case 'invalid-app-credential':
+        return 'Couldn\'t confirm you\'re not a robot. Please reload the page and try again.';
+      case 'session-expired':
+      case 'code-expired':
+        return 'That code has expired. Please request a new one.';
       case 'invalid-verification-code':
         return 'That code doesn\'t look right. Please try again.';
       case 'invalid-phone-number':
