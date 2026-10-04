@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 
+import 'location_access.dart';
+
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 
@@ -42,10 +44,8 @@ class _AuthScreenState extends State<AuthScreen> {
       // FirebaseAuthException extends FirebaseException, so this covers
       // both auth errors and Firestore errors (e.g. permission-denied).
       _showError(_friendlyErrorMessage(e.code));
-    } on LocationServiceDisabledException {
-      _showError('Please turn on location services and try again.');
-    } on PermissionDeniedException {
-      _showError('Location permission is required to set your home city.');
+    } on LocationAccessException catch (e) {
+      _showError(e.message);
     } catch (e) {
       debugPrint('Auth submit failed: $e');
       _showError('Something went wrong. Please try again.');
@@ -65,23 +65,6 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() {
       errorMessage = message;
     });
-  }
-
-  Future<Position> _getHomePosition() async {
-    if (!await Geolocator.isLocationServiceEnabled()) {
-      throw const LocationServiceDisabledException();
-    }
-
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      throw const PermissionDeniedException('Location permission denied.');
-    }
-
-    return Geolocator.getCurrentPosition().timeout(const Duration(seconds: 10));
   }
 
   Future<void> _signUp() async {
@@ -110,7 +93,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
     // Get the location before creating the account so a location failure
     // doesn't leave an auth user with no profile document.
-    Position position = await _getHomePosition();
+    Position position = await getPositionWithPermission();
 
     // Firestore rules only allow signed-in users to read the users
     // collection, so the account has to exist before the username check.

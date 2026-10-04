@@ -3,6 +3,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import 'location_access.dart';
+
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
@@ -42,26 +44,7 @@ class _MapScreenState extends State<MapScreen> {
     });
 
     try {
-      if (!await Geolocator.isLocationServiceEnabled()) {
-        _showLocationError('Location services are turned off. Turn them on to find places near you.');
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (permission == LocationPermission.deniedForever) {
-        _showLocationError('Location permission is blocked. Enable it in Settings to check in.',
-            permanentlyDenied: true);
-        return;
-      }
-      if (permission == LocationPermission.denied) {
-        _showLocationError('Location permission is needed to find places near you.');
-        return;
-      }
-
-      Position position = await Geolocator.getCurrentPosition().timeout(const Duration(seconds: 10));
+      Position position = await getPositionWithPermission();
       if (!mounted) return;
 
       setState(() {
@@ -69,6 +52,8 @@ class _MapScreenState extends State<MapScreen> {
       });
 
       _loadNearbyPlaces(position);
+    } on LocationAccessException catch (e) {
+      _showLocationError(e.message, permanentlyDenied: e.canOpenSettings);
     } catch (e) {
       debugPrint('Failed to get location: $e');
       _showLocationError('Couldn\'t get your location. Please try again.');
