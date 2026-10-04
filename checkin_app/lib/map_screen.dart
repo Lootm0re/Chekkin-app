@@ -21,6 +21,9 @@ class _MapScreenState extends State<MapScreen> {
   List<String> nearbyEligiblePlaceTypes = [];
   bool isCheckingIn = false;
 
+  String? locationError;
+  bool locationPermanentlyDenied = false;
+
   final TextEditingController buddyUsernameController = TextEditingController();
   final FirebaseFunctions functions = FirebaseFunctions.instance;
 
@@ -33,18 +36,51 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _getUserLocation() async {
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-
-    Position position = await Geolocator.getCurrentPosition();
-
     setState(() {
-      currentPosition = position;
+      locationError = null;
+      locationPermanentlyDenied = false;
     });
 
-    _loadNearbyPlaces(position);
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        _showLocationError('Location services are turned off. Turn them on to find places near you.');
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.deniedForever) {
+        _showLocationError('Location permission is blocked. Enable it in Settings to check in.',
+            permanentlyDenied: true);
+        return;
+      }
+      if (permission == LocationPermission.denied) {
+        _showLocationError('Location permission is needed to find places near you.');
+        return;
+      }
+
+      Position position = await Geolocator.getCurrentPosition().timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+
+      setState(() {
+        currentPosition = position;
+      });
+
+      _loadNearbyPlaces(position);
+    } catch (e) {
+      debugPrint('Failed to get location: $e');
+      _showLocationError('Couldn\'t get your location. Please try again.');
+    }
+  }
+
+  void _showLocationError(String message, {bool permanentlyDenied = false}) {
+    if (!mounted) return;
+    setState(() {
+      locationError = message;
+      locationPermanentlyDenied = permanentlyDenied;
+    });
   }
 
   Future<void> _loadNearbyPlaces(Position position) async {
@@ -113,6 +149,7 @@ class _MapScreenState extends State<MapScreen> {
         'placeTypes': nearbyEligiblePlaceTypes,
       });
 
+      if (!mounted) return;
       int pointsEarned = response.data['pointsEarned'];
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -128,6 +165,7 @@ class _MapScreenState extends State<MapScreen> {
             'friendUsername': buddyUsername,
           });
 
+          if (!mounted) return;
           bool matched = buddyResponse.data['matched'];
           if (matched) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -139,30 +177,64 @@ class _MapScreenState extends State<MapScreen> {
             );
           }
         } on FirebaseFunctionsException catch (e) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(e.message ?? 'Buddy check-in failed.')),
           );
         }
       }
     } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message ?? 'Check-in failed. Please try again.')),
       );
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Something went wrong. Please check your connection and try again.')),
       );
     } finally {
-      setState(() {
-        isCheckingIn = false;
-        nearbyEligiblePlaceName = null;
-        buddyUsernameController.clear();
-      });
+      if (mounted) {
+        setState(() {
+          isCheckingIn = false;
+          nearbyEligiblePlaceName = null;
+          buddyUsernameController.clear();
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (currentPosition == null && locationError != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Check In')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.location_off, size: 48, color: Colors.grey),
+                const SizedBox(height: 16),
+                Text(locationError!, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: _getUserLocation,
+                  child: const Text('Try Again'),
+                ),
+                if (locationPermanentlyDenied)
+                  TextButton(
+                    onPressed: Geolocator.openAppSettings,
+                    child: const Text('Open Settings'),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     if (currentPosition == null) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),

@@ -27,12 +27,10 @@ class _AuthScreenState extends State<AuthScreen> {
   String? errorMessage;
 
   Future<void> _handleSubmit() async {
-  
-  print('Button tapped - isSignUpMode: $isSignUpMode');
-  setState(() {
-    isLoading = true;
-    errorMessage = null;
-  });
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
 
     try {
       if (isSignUpMode) {
@@ -40,15 +38,50 @@ class _AuthScreenState extends State<AuthScreen> {
       } else {
         await _logIn();
       }
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        errorMessage = _friendlyErrorMessage(e.code);
-      });
+    } on FirebaseException catch (e) {
+      // FirebaseAuthException extends FirebaseException, so this covers
+      // both auth errors and Firestore errors (e.g. permission-denied).
+      _showError(_friendlyErrorMessage(e.code));
+    } on LocationServiceDisabledException {
+      _showError('Please turn on location services and try again.');
+    } on PermissionDeniedException {
+      _showError('Location permission is required to set your home city.');
+    } catch (e) {
+      debugPrint('Auth submit failed: $e');
+      _showError('Something went wrong. Please try again.');
     } finally {
-      setState(() {
-        isLoading = false;
-      });
+      // After a successful sign-up/log-in, AuthGate replaces this screen,
+      // so it may already be disposed.
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+        });
+      }
     }
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    setState(() {
+      errorMessage = message;
+    });
+  }
+
+  Future<Position> _getHomePosition() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      throw const LocationServiceDisabledException();
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      throw const PermissionDeniedException('Location permission denied.');
+    }
+
+    return Geolocator.getCurrentPosition().timeout(const Duration(seconds: 10));
   }
 
   Future<void> _signUp() async {
@@ -73,15 +106,14 @@ class _AuthScreenState extends State<AuthScreen> {
       throw FirebaseAuthException(code: 'username-taken', message: 'Username already taken.');
     }
 
+    // Get the location before creating the account so a location failure
+    // doesn't leave an auth user with no profile document.
+    Position position = await _getHomePosition();
+
     UserCredential credential = await auth.createUserWithEmailAndPassword(
       email: emailController.text.trim(),
       password: passwordController.text,
     );
-
-    Position position = await Geolocator.getCurrentPosition().timeout(
-  const Duration(seconds: 10),
-  onTimeout: () => throw Exception('Location request timed out. Please allow location access and try again.'),
-);
 
     await db.collection('users').doc(credential.user!.uid).set({
       'name': nameController.text.trim(),
@@ -131,6 +163,11 @@ class _AuthScreenState extends State<AuthScreen> {
         return 'You must be $minimumAge or older to use this app.';
       case 'no-birthdate':
         return 'Please enter your date of birth.';
+      case 'permission-denied':
+        return 'Couldn\'t check that username. Please try again later.';
+      case 'network-request-failed':
+      case 'unavailable':
+        return 'No internet connection. Please try again.';
       default:
         return 'Something went wrong. Please try again.';
     }
