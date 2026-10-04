@@ -64,58 +64,70 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
         smsCode: codeController.text.trim(),
       );
       await _linkPhoneCredential(credential);
-    } catch (e) {
-      _showError(e, 'Verifying code failed');
+    } catch (e, stack) {
+      _showError(e, 'Verifying code failed', stack);
     }
   }
 
   Future<void> _linkPhoneCredential(PhoneAuthCredential credential) async {
+    // Tracks how far we got so the error says which step failed.
+    String step = 'link phone to account';
     try {
       User user = FirebaseAuth.instance.currentUser!;
       bool hasPhone = user.providerData.any((p) => p.providerId == PhoneAuthProvider.PROVIDER_ID);
+      debugPrint('Phone verify: uid=${user.uid} hasPhone=$hasPhone');
       if (hasPhone) {
         // A phone was linked on an earlier attempt that didn't finish.
+        step = 'replace linked phone';
         await user.updatePhoneNumber(credential);
       } else {
         await user.linkWithCredential(credential);
       }
+      debugPrint('Phone verify: $step OK');
 
       // The server checks the number isn't used by another account and sets
       // phoneVerified (clients aren't allowed to). AuthGate moves on once the
       // profile updates.
+      step = 'confirmPhoneVerified function';
       try {
-        await FirebaseFunctions.instance.httpsCallable('confirmPhoneVerified').call();
+        final result = await FirebaseFunctions.instance.httpsCallable('confirmPhoneVerified').call();
+        debugPrint('Phone verify: $step OK ${result.data}');
       } on FirebaseFunctionsException catch (e) {
+        debugPrint('Phone verify: $step details=${e.details}');
         if (e.code == 'already-exists') {
           // Free this account to try a different number.
           await user.unlink(PhoneAuthProvider.PROVIDER_ID);
         }
         rethrow;
       }
-    } catch (e) {
-      _showError(e, 'Linking phone number failed');
+    } catch (e, stack) {
+      _showError(e, 'Phone verify failed at "$step"', stack);
     }
   }
 
   /// Logs the real error to the console (browser devtools on web) and shows
   /// a friendly version of it on screen.
-  void _showError(Object error, String context) {
+  void _showError(Object error, String context, [StackTrace? stack]) {
     String code = 'unknown';
-    if (error is FirebaseException) {
+    if (error is FirebaseFunctionsException) {
+      code = error.code;
+      debugPrint('$context: [functions/${error.code}] ${error.message} details=${error.details}');
+    } else if (error is FirebaseException) {
       code = error.code;
       debugPrint('$context: [${error.plugin}/${error.code}] ${error.message}');
     } else {
-      debugPrint('$context: $error');
+      debugPrint('$context: ${error.runtimeType}: $error');
     }
+    if (stack != null) debugPrint('$stack');
 
     if (!mounted) return;
     setState(() {
-      errorMessage = _friendlyError(code);
+      errorMessage = _friendlyError(code) ?? 'Something went wrong ($context: $code). Please try again.';
       isLoading = false;
     });
   }
 
-  String _friendlyError(String code) {
+  String? _friendlyError(String code) {
     switch (code) {
       case 'already-exists':
       case 'credential-already-in-use':
@@ -135,7 +147,7 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
       case 'invalid-phone-number':
         return 'Please enter a valid phone number, including country code (e.g. +1...).';
       default:
-        return 'Something went wrong. Please try again.';
+        return null;
     }
   }
 
