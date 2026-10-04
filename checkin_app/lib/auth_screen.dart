@@ -33,7 +33,7 @@ class _AuthScreenState extends State<AuthScreen> {
     });
 
     try {
-      if (isSignUpMode) {
+      if (isSignUpMode || auth.currentUser != null) {
         await _signUp();
       } else {
         await _logIn();
@@ -86,39 +86,76 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Future<void> _signUp() async {
     if (dateOfBirth == null) {
-      throw FirebaseAuthException(code: 'no-birthdate', message: 'Please enter your date of birth.');
+      throw FirebaseAuthException(
+        code: 'no-birthdate',
+        message: 'Please enter your date of birth.',
+      );
     }
 
     int age = _calculateAge(dateOfBirth!);
     if (age < minimumAge) {
-      throw FirebaseAuthException(code: 'underage', message: 'Must be $minimumAge or older.');
+      throw FirebaseAuthException(
+        code: 'underage',
+        message: 'Must be $minimumAge or older.',
+      );
     }
 
     String desiredUsername = usernameController.text.trim().toLowerCase();
-
-    QuerySnapshot existing = await db
-        .collection('users')
-        .where('username', isEqualTo: desiredUsername)
-        .limit(1)
-        .get();
-
-    if (existing.docs.isNotEmpty) {
-      throw FirebaseAuthException(code: 'username-taken', message: 'Username already taken.');
+    if (desiredUsername.isEmpty) {
+      throw FirebaseAuthException(
+        code: 'no-username',
+        message: 'Please choose a username.',
+      );
     }
 
     // Get the location before creating the account so a location failure
     // doesn't leave an auth user with no profile document.
     Position position = await _getHomePosition();
 
-    UserCredential credential = await auth.createUserWithEmailAndPassword(
-      email: emailController.text.trim(),
-      password: passwordController.text,
-    );
+    // Firestore rules only allow signed-in users to read the users
+    // collection, so the account has to exist before the username check.
+    // A user may already be signed in without a profile (e.g. an earlier
+    // sign-up failed halfway) - in that case finish their profile instead.
+    User? user = auth.currentUser;
+    bool createdNewUser = false;
+    if (user == null) {
+      UserCredential credential = await auth.createUserWithEmailAndPassword(
+        email: emailController.text.trim(),
+        password: passwordController.text,
+      );
+      user = credential.user!;
+      createdNewUser = true;
+    }
 
-    await db.collection('users').doc(credential.user!.uid).set({
+    try {
+      QuerySnapshot existing = await db
+          .collection('users')
+          .where('username', isEqualTo: desiredUsername)
+          .limit(1)
+          .get();
+
+      if (existing.docs.isNotEmpty) {
+        throw FirebaseAuthException(
+          code: 'username-taken',
+          message: 'Username already taken.',
+        );
+      }
+    } catch (_) {
+      // Don't leave behind an account the person can't finish setting up.
+      if (createdNewUser) {
+        try {
+          await user.delete();
+        } catch (e) {
+          debugPrint('Failed to clean up new account: $e');
+        }
+      }
+      rethrow;
+    }
+
+    await db.collection('users').doc(user.uid).set({
       'name': nameController.text.trim(),
       'username': desiredUsername,
-      'email': emailController.text.trim(),
+      'email': user.email ?? emailController.text.trim(),
       'points': 0,
       'phoneVerified': false,
       'dateOfBirth': Timestamp.fromDate(dateOfBirth!),
@@ -163,6 +200,8 @@ class _AuthScreenState extends State<AuthScreen> {
         return 'You must be $minimumAge or older to use this app.';
       case 'no-birthdate':
         return 'Please enter your date of birth.';
+      case 'no-username':
+        return 'Please choose a username.';
       case 'permission-denied':
         return 'Couldn\'t check that username. Please try again later.';
       case 'network-request-failed':
@@ -175,34 +214,52 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Signed in but no profile yet (a previous sign-up didn't finish). While a
+    // sign-up is running the user is briefly signed in too, so keep the
+    // normal form up until it settles.
+    bool finishingProfile = auth.currentUser != null && !isLoading;
+    bool showSignUp = isSignUpMode || finishingProfile;
+
     return Scaffold(
-      appBar: AppBar(title: Text(isSignUpMode ? 'Sign Up' : 'Log In')),
+      appBar: AppBar(
+        title: Text(
+          finishingProfile
+              ? 'Finish Sign Up'
+              : showSignUp
+              ? 'Sign Up'
+              : 'Log In',
+        ),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (isSignUpMode)
+            if (showSignUp)
               TextField(
                 controller: nameController,
                 decoration: const InputDecoration(labelText: 'Name'),
               ),
             const SizedBox(height: 12),
 
-            if (isSignUpMode)
+            if (showSignUp)
               TextField(
                 controller: usernameController,
-                decoration: const InputDecoration(labelText: 'Username (for friends to find you)'),
+                decoration: const InputDecoration(
+                  labelText: 'Username (for friends to find you)',
+                ),
               ),
             const SizedBox(height: 12),
 
-            if (isSignUpMode)
+            if (showSignUp)
               InkWell(
                 onTap: () async {
                   DateTime? picked = await showDatePicker(
                     context: context,
-                    initialDate: DateTime.now().subtract(const Duration(days: 365 * 25)),
+                    initialDate: DateTime.now().subtract(
+                      const Duration(days: 365 * 25),
+                    ),
                     firstDate: DateTime(1900),
                     lastDate: DateTime.now(),
                   );
@@ -221,21 +278,23 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             const SizedBox(height: 12),
 
-            TextField(
-              controller: emailController,
-              decoration: const InputDecoration(labelText: 'Email'),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            const SizedBox(height: 12),
+            if (!finishingProfile) ...[
+              TextField(
+                controller: emailController,
+                decoration: const InputDecoration(labelText: 'Email'),
+                keyboardType: TextInputType.emailAddress,
+              ),
+              const SizedBox(height: 12),
 
-            TextField(
-              controller: passwordController,
-              decoration: const InputDecoration(labelText: 'Password'),
-              obscureText: true,
-            ),
-            const SizedBox(height: 8),
+              TextField(
+                controller: passwordController,
+                decoration: const InputDecoration(labelText: 'Password'),
+                obscureText: true,
+              ),
+              const SizedBox(height: 8),
+            ],
 
-            if (isSignUpMode)
+            if (showSignUp)
               const Padding(
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
@@ -249,27 +308,44 @@ class _AuthScreenState extends State<AuthScreen> {
             if (errorMessage != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: Text(errorMessage!, style: const TextStyle(color: Colors.red)),
+                child: Text(
+                  errorMessage!,
+                  style: const TextStyle(color: Colors.red),
+                ),
               ),
 
             ElevatedButton(
               onPressed: isLoading ? null : _handleSubmit,
               child: isLoading
                   ? const CircularProgressIndicator()
-                  : Text(isSignUpMode ? 'Create Account' : 'Log In'),
+                  : Text(
+                      finishingProfile
+                          ? 'Finish Sign Up'
+                          : showSignUp
+                          ? 'Create Account'
+                          : 'Log In',
+                    ),
             ),
 
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  isSignUpMode = !isSignUpMode;
-                  errorMessage = null;
-                });
-              },
-              child: Text(isSignUpMode
-                  ? 'Already have an account? Log In'
-                  : 'Need an account? Sign Up'),
-            ),
+            if (finishingProfile)
+              TextButton(
+                onPressed: () => auth.signOut(),
+                child: const Text('Use a different account'),
+              )
+            else
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    isSignUpMode = !isSignUpMode;
+                    errorMessage = null;
+                  });
+                },
+                child: Text(
+                  isSignUpMode
+                      ? 'Already have an account? Log In'
+                      : 'Need an account? Sign Up',
+                ),
+              ),
           ],
         ),
       ),

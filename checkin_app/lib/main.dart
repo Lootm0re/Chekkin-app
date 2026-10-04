@@ -32,6 +32,11 @@ class CheckInApp extends StatelessWidget {
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
+  // Sign-up creates the auth account before writing the profile, so the auth
+  // state flips mid-flow. A global key lets the same AuthScreen state (form
+  // contents, loading, errors) move between branches instead of being reset.
+  static final GlobalKey _authScreenKey = GlobalKey();
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -41,15 +46,25 @@ class AuthGate extends StatelessWidget {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         if (!authSnapshot.hasData) {
-          return const AuthScreen();
+          return AuthScreen(key: _authScreenKey);
         }
 
         String uid = authSnapshot.data!.uid;
         return StreamBuilder<DocumentSnapshot>(
           stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
           builder: (context, userSnapshot) {
-            if (!userSnapshot.hasData || !userSnapshot.data!.exists) {
+            if (!userSnapshot.hasData) {
+              // Keep the auth screen up if it's already showing (sign-up in
+              // progress); otherwise this is a normal app start.
+              if (_authScreenKey.currentState != null) {
+                return AuthScreen(key: _authScreenKey);
+              }
               return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+            if (!userSnapshot.data!.exists) {
+              // Signed in without a profile: sign-up is in progress, or an
+              // earlier one failed halfway and still needs finishing.
+              return AuthScreen(key: _authScreenKey);
             }
 
             var data = userSnapshot.data!.data() as Map<String, dynamic>;
