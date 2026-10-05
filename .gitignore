@@ -1,2 +1,5 @@
 # Firebase CLI deploy cache
 .firebase/
+
+# Flutter SDK checked out into the workspace
+/flutter/
