@@ -273,6 +273,14 @@ function readCoordinates(data, latKey, lngKey) {
   return { lat, lng };
 }
 
+function throwIfCheckedInRecently(lastCheckInDoc, place) {
+  const lastAt = lastCheckInDoc.exists ? lastCheckInDoc.get('lastCheckInAt')?.toMillis() : null;
+  if (lastAt && Date.now() - lastAt < CHECK_IN_COOLDOWN_HOURS * 3600 * 1000) {
+    throw new HttpsError('already-exists',
+      `You've already checked in at ${place.name} today. Try again tomorrow.`);
+  }
+}
+
 /** Returns check-in eligible places near the given position. */
 exports.nearbyPlaces = onCall(async (request) => {
   if (!request.auth) {
@@ -338,14 +346,18 @@ exports.performCheckIn = onCall(async (request) => {
   }
 
   const db = getFirestore();
-  if (BUSINESS_CATEGORIES.includes(place.category)) {
-    await checkBusinessCode(db, uid, place, request.data?.code);
-  }
-
   const userRef = db.collection('users').doc(uid);
   const placeRef = db.collection('places').doc(placeId);
   const lastCheckInRef = db.collection('users').doc(uid).collection('placeCheckIns').doc(placeId);
   const checkInRef = db.collection('checkIns').doc();
+
+  if (BUSINESS_CATEGORIES.includes(place.category)) {
+    // Checked first so a code can't be used up, or count as a wrong guess,
+    // when the check-in would be refused anyway. The transaction below
+    // checks again.
+    throwIfCheckedInRecently(await lastCheckInRef.get(), place);
+    await checkBusinessCode(db, uid, place, request.data?.code);
+  }
 
   const pointsEarned = await db.runTransaction(async (tx) => {
     const [userDoc, placeDoc, lastDoc] = await Promise.all([
@@ -356,11 +368,7 @@ exports.performCheckIn = onCall(async (request) => {
       throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
     }
 
-    const lastAt = lastDoc.exists ? lastDoc.get('lastCheckInAt')?.toMillis() : null;
-    if (lastAt && Date.now() - lastAt < CHECK_IN_COOLDOWN_HOURS * 3600 * 1000) {
-      throw new HttpsError('already-exists',
-        `You've already checked in at ${place.name} today. Try again tomorrow.`);
-    }
+    throwIfCheckedInRecently(lastDoc, place);
 
     const timesCheckedIn = placeDoc.exists ? (placeDoc.get('timesCheckedIn') ?? 0) : 0;
     const homeLat = userDoc.get('homeLatitude');

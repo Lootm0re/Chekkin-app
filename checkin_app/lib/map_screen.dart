@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -25,6 +27,15 @@ class _MapScreenState extends State<MapScreen> {
 
   // The place in range that the check-in panel is showing.
   CheckInPlace? selectedPlace;
+  // Why the last check-in attempt failed, shown in the panel.
+  String? checkInError;
+
+  // Messages are shown in a banner on the map, not snackbars: on web the
+  // Google Map is drawn over snackbars, so they never appeared.
+  String? mapMessage;
+  String? mapMessageActionLabel;
+  VoidCallback? mapMessageAction;
+  Timer? mapMessageTimer;
   bool isCheckingIn = false;
   bool isLoadingPlaces = false;
 
@@ -51,6 +62,14 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     _getUserLocation();
+  }
+
+  @override
+  void dispose() {
+    mapMessageTimer?.cancel();
+    buddyUsernameController.dispose();
+    codeController.dispose();
+    super.dispose();
   }
 
   Future<void> _getUserLocation() async {
@@ -153,22 +172,33 @@ class _MapScreenState extends State<MapScreen> {
 
       setState(() => markers = newMarkers);
       if (newMarkers.isEmpty) {
-        _showSnackBar('No check-in places found nearby.');
+        _showMapMessage('No check-in places found nearby.');
       }
     } on FirebaseFunctionsException catch (e) {
       debugPrint('Loading nearby places failed: [${e.code}] ${e.message}');
-      _showSnackBar(e.message ?? 'Couldn\'t load nearby places.');
+      _showMapMessage(e.message ?? 'Couldn\'t load nearby places.');
     } catch (e) {
       debugPrint('Loading nearby places failed: $e');
-      _showSnackBar('Couldn\'t load nearby places. Please check your connection.');
+      _showMapMessage('Couldn\'t load nearby places. Please check your connection.');
     } finally {
       if (mounted) setState(() => isLoadingPlaces = false);
     }
   }
 
-  void _showSnackBar(String message) {
+  void _showMapMessage(String message, {String? actionLabel, VoidCallback? onAction}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    mapMessageTimer?.cancel();
+    setState(() {
+      mapMessage = message;
+      mapMessageActionLabel = actionLabel;
+      mapMessageAction = onAction;
+    });
+    mapMessageTimer = Timer(Duration(seconds: onAction != null ? 10 : 6), _hideMapMessage);
+  }
+
+  void _hideMapMessage() {
+    mapMessageTimer?.cancel();
+    if (mounted) setState(() => mapMessage = null);
   }
 
   Future<void> _selectPlace(CheckInPlace place) async {
@@ -190,25 +220,24 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     if (distance <= checkInRangeMeters) {
-      if (selectedPlace?.id != place.id) codeController.clear();
+      if (selectedPlace?.id != place.id) {
+        codeController.clear();
+        checkInError = null;
+      }
       setState(() => selectedPlace = place);
+      _hideMapMessage();
     } else {
       setState(() => selectedPlace = null);
       String message = 'Too far away - get within ${checkInRangeMeters.toInt()}m to check in '
           '(currently ${distance.toStringAsFixed(0)}m away)';
       if (devTools) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(message),
-          action: SnackBarAction(
-            label: 'DEV: Teleport here',
-            onPressed: () {
-              _devTeleport(place.position);
-              _selectPlace(place);
-            },
-          ),
-        ));
+        _showMapMessage(message, actionLabel: 'DEV: Teleport here', onAction: () {
+          _hideMapMessage();
+          _devTeleport(place.position);
+          _selectPlace(place);
+        });
       } else {
-        _showSnackBar(message);
+        _showMapMessage(message);
       }
     }
   }
@@ -217,7 +246,10 @@ class _MapScreenState extends State<MapScreen> {
     CheckInPlace? place = selectedPlace;
     if (place == null || isCheckingIn) return;
 
-    setState(() => isCheckingIn = true);
+    setState(() {
+      isCheckingIn = true;
+      checkInError = null;
+    });
 
     String placeId = place.id;
     String placeName = place.name;
@@ -241,10 +273,11 @@ class _MapScreenState extends State<MapScreen> {
         buddyMessage = await _attemptBuddyCheckIn(placeId, buddyUsername);
       }
     } on FirebaseFunctionsException catch (e) {
-      _showSnackBar(e.message ?? 'Check-in failed. Please try again.');
+      debugPrint('Check-in failed: [${e.code}] ${e.message}');
+      checkInError = e.message ?? 'Check-in failed. Please try again.';
     } catch (e) {
       debugPrint('Check-in failed: $e');
-      _showSnackBar('Something went wrong. Please check your connection and try again.');
+      checkInError = 'Something went wrong. Please check your connection and try again.';
     } finally {
       // On failure the panel stays open, so a mistyped code can be retried.
       if (mounted) {
@@ -408,6 +441,38 @@ class _MapScreenState extends State<MapScreen> {
             child: const IgnorePointer(child: Center(child: PlaceCategoryLegend())),
           ),
 
+          if (mapMessage != null)
+            Positioned(
+              top: devTools ? 84 : 48,
+              left: 12,
+              right: 12,
+              child: Material(
+                color: Colors.grey[900],
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 14),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Text(mapMessage!, style: const TextStyle(color: Colors.white)),
+                        ),
+                      ),
+                      if (mapMessageAction != null)
+                        TextButton(onPressed: mapMessageAction, child: Text(mapMessageActionLabel ?? 'OK')),
+                      IconButton(
+                        tooltip: 'Dismiss',
+                        icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                        onPressed: _hideMapMessage,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           if (devTools)
             Positioned(
               top: 8,
@@ -439,6 +504,25 @@ class _MapScreenState extends State<MapScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (checkInError != null) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.red[50],
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red[300]!),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.error_outline, color: Colors.red[700]),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(checkInError!, style: TextStyle(color: Colors.red[900]))),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   if (selectedPlace!.requiresCode) ...[
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
