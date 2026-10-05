@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'profile_picture.dart';
+import 'user_avatar.dart';
 
 class LeaderboardScreen extends StatelessWidget {
   const LeaderboardScreen({super.key});
@@ -67,7 +67,7 @@ class LeaderboardScreen extends StatelessWidget {
                                         : null,
                           ),
                         ),
-                        ProfileAvatar(photoUrl: data['profilePictureUrl'], radius: 18),
+                        UserAvatar(data: data, radius: 18),
                       ],
                     ),
                   ),

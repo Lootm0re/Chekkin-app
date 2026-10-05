@@ -10,6 +10,8 @@ import 'phone_verify_screen.dart';
 import 'leaderboard_screen.dart';
 import 'profile_picture.dart';
 import 'business_screen.dart';
+import 'avatar_editor_screen.dart';
+import 'user_avatar.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -136,6 +138,31 @@ class _HomeScreenState extends State<HomeScreen> {
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
+  Future<void> _uploadPhoto(BuildContext context) async {
+    try {
+      await ProfilePictureUploader().pickAndUploadPhoto();
+    } catch (e) {
+      debugPrint('Uploading photo failed: $e');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Couldn\'t upload your photo. Please try again.')),
+      );
+    }
+  }
+
+  Future<void> _updateProfile(BuildContext context, Map<String, Object> fields) async {
+    try {
+      String uid = FirebaseAuth.instance.currentUser!.uid;
+      await FirebaseFirestore.instance.collection('users').doc(uid).update(fields);
+    } catch (e) {
+      debugPrint('Updating profile failed: $e');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Couldn\'t save that change. Please try again.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     String uid = FirebaseAuth.instance.currentUser!.uid;
@@ -148,53 +175,77 @@ class ProfileScreen extends StatelessWidget {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
           var data = snapshot.data!.data() as Map<String, dynamic>;
+          bool hasAvatar = data['avatar'] is Map;
+          String? photoUrl = data['profilePictureUrl'];
+          bool hasPhoto = photoUrl != null && photoUrl.isNotEmpty;
+          bool hidden = data['avatarHidden'] == true;
 
-          return Padding(
+          // A ListView so the profile scrolls on small screens.
+          return ListView(
             padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: GestureDetector(
-                    onTap: () async {
-                      await ProfilePictureUploader().pickAndUploadPhoto();
-                    },
-                    child: Stack(
-                      children: [
-                        ProfileAvatar(photoUrl: data['profilePictureUrl'], radius: 50),
-                        const Positioned(
-                          bottom: 0,
-                          right: 0,
-                          child: CircleAvatar(
-                            radius: 14,
-                            child: Icon(Icons.edit, size: 16),
-                          ),
-                        ),
-                      ],
+            children: [
+              Center(child: UserAvatar(data: data, radius: 50)),
+              const SizedBox(height: 12),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.face),
+                    label: Text(hasAvatar ? 'Edit avatar' : 'Create avatar'),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => AvatarEditorScreen(currentAvatar: data['avatar'])),
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                Text('Name: ${data['name']}', style: const TextStyle(fontSize: 18)),
-                const SizedBox(height: 8),
-                Text('Username: @${data['username']}', style: const TextStyle(fontSize: 18)),
-                const SizedBox(height: 8),
-                Text('Points: ${data['points']}', style: const TextStyle(fontSize: 18)),
-                const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.storefront),
-                  label: const Text('My Business'),
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const BusinessScreen()),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.photo),
+                    label: Text(hasPhoto ? 'Change photo' : 'Upload photo'),
+                    onPressed: () => _uploadPhoto(context),
+                  ),
+                ],
+              ),
+              if (hasAvatar && hasPhoto) ...[
+                const SizedBox(height: 12),
+                Center(
+                  child: SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'avatar', label: Text('Show avatar'), icon: Icon(Icons.face)),
+                      ButtonSegment(value: 'photo', label: Text('Show photo'), icon: Icon(Icons.photo)),
+                    ],
+                    // Same rule as UserAvatar: the photo, unless the avatar was chosen.
+                    selected: {data['profileImage'] == 'avatar' ? 'avatar' : 'photo'},
+                    onSelectionChanged: (choice) => _updateProfile(context, {'profileImage': choice.first}),
                   ),
                 ),
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: () => FirebaseAuth.instance.signOut(),
-                  child: const Text('Log Out'),
-                ),
               ],
-            ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Show my picture to other users'),
+                subtitle: Text(hidden ? 'Others see a default icon.' : 'Shown on the leaderboard.'),
+                value: !hidden,
+                onChanged: (show) => _updateProfile(context, {'avatarHidden': !show}),
+              ),
+              const SizedBox(height: 16),
+              Text('Name: ${data['name']}', style: const TextStyle(fontSize: 18)),
+              const SizedBox(height: 8),
+              Text('Username: @${data['username']}', style: const TextStyle(fontSize: 18)),
+              const SizedBox(height: 8),
+              Text('Points: ${data['points']}', style: const TextStyle(fontSize: 18)),
+              const SizedBox(height: 24),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.storefront),
+                label: const Text('My Business'),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const BusinessScreen()),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: () => FirebaseAuth.instance.signOut(),
+                child: const Text('Log Out'),
+              ),
+            ],
           );
         },
       ),

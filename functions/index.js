@@ -1,5 +1,6 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { isDeepStrictEqual } = require('util');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
@@ -75,22 +76,47 @@ exports.confirmPhoneVerified = onCall(async (request) => {
 // users/{uid} is private to its owner (email, date of birth, phone, home
 // location). The fields other users may see - for the leaderboard and buddy
 // check-ins - are mirrored to publicProfiles/{uid}, which only this function
-// writes. Points stay authoritative on users/{uid}; the copy follows within
+// writes. A user who hides their picture gets no photo or avatar there, so
+// others see the default icon. Points stay authoritative on users/{uid}; the copy follows within
 // a few seconds.
 // ---------------------------------------------------------------------------
 
-const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points', 'profilePictureUrl'];
+const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points'];
+
+// Same as PropertyCategoryIds in the avatar_maker package. Each avatar part is
+// stored as the chosen item's id, e.g. 'HairStyles/Long'.
+const AVATAR_PARTS = [
+  'Accessory', 'AvatarBackground', 'AvatarEffect', 'AvatarEffectColor', 'Background',
+  'EyebrowType', 'EyeType', 'FacialHairColor', 'FacialHairType', 'HairColor', 'HairStyle',
+  'MouthType', 'Nose', 'OutfitColor', 'OutfitType', 'SkinColor',
+];
+
+function cleanAvatar(avatar) {
+  if (!avatar || typeof avatar !== 'object') return undefined;
+  const clean = {};
+  for (const part of AVATAR_PARTS) {
+    const item = avatar[part];
+    if (typeof item === 'string' && /^[A-Za-z0-9_/]{1,64}$/.test(item)) clean[part] = item;
+  }
+  return Object.keys(clean).length ? clean : undefined;
+}
 
 function publicProfileOf(userData) {
   const profile = {};
   for (const field of PUBLIC_PROFILE_FIELDS) {
     if (userData[field] !== undefined) profile[field] = userData[field];
   }
+  // The photo and avatar are shown unless the user has hidden them.
+  // profileImage says which to show when both exist: 'avatar' or 'photo'.
+  if (userData.avatarHidden !== true) {
+    const avatar = cleanAvatar(userData.avatar);
+    if (avatar) profile.avatar = avatar;
+    if (typeof userData.profilePictureUrl === 'string') profile.profilePictureUrl = userData.profilePictureUrl;
+    if (['avatar', 'photo'].includes(userData.profileImage)) profile.profileImage = userData.profileImage;
+  }
   return profile;
 }
 
-// The database is in europe-north2, which Cloud Functions doesn't offer, so
-// the trigger runs in the nearest region that does.
 exports.syncPublicProfile = onDocumentWritten({
   document: 'users/{uid}',
   region: 'europe-north1',
@@ -105,7 +131,7 @@ exports.syncPublicProfile = onDocumentWritten({
   const before = event.data.before;
   const profile = publicProfileOf(after.data());
   const unchanged = before?.exists &&
-    PUBLIC_PROFILE_FIELDS.every((f) => before.get(f) === after.get(f));
+    isDeepStrictEqual(publicProfileOf(before.data()), profile);
   if (unchanged) return;
 
   // set() without merge, so a field removed from users disappears here too.

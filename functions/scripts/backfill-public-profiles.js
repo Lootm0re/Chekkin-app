@@ -6,7 +6,8 @@
 
 const { cliFirestore } = require('./cli-firestore');
 
-// Same fields as PUBLIC_PROFILE_FIELDS in index.js.
+// The public fields when this was first run; syncPublicProfile keeps
+// profiles up to date since.
 const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points', 'profilePictureUrl'];
 
 async function main() {

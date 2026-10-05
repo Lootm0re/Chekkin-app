@@ -2,9 +2,24 @@ rules_version = '2';
 
 // Points, phone verification, check-ins, places and buddy check-ins are only
 // written by Cloud Functions (admin access bypasses these rules). The app may
-// only create its own profile and change its profile picture.
+// only create its own profile and change its picture, avatar and their visibility.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // avatar maps avatar_maker's part names to item ids; syncPublicProfile
+    // also checks each value before showing it to others.
+    function validPicture(data) {
+      return (!('profilePictureUrl' in data) || (data.profilePictureUrl is string
+               && data.profilePictureUrl.size() <= 2048))
+        && (!('avatar' in data) || (data.avatar is map
+               && data.avatar.keys().hasOnly([
+                    'Accessory', 'AvatarBackground', 'AvatarEffect', 'AvatarEffectColor',
+                    'Background', 'EyebrowType', 'EyeType', 'FacialHairColor',
+                    'FacialHairType', 'HairColor', 'HairStyle', 'MouthType', 'Nose',
+                    'OutfitColor', 'OutfitType', 'SkinColor'])))
+        && (!('avatarHidden' in data) || data.avatarHidden is bool)
+        && (!('profileImage' in data) || data.profileImage in ['avatar', 'photo']);
+    }
 
     // Private: email, date of birth, phone, home location. Other users see
     // publicProfiles instead.
@@ -25,10 +40,13 @@ service cloud.firestore {
         && request.resource.data.homeLastChanged == request.time
         && request.resource.data.createdAt == request.time;
 
-      // profile_picture.dart
+      // Profile picture, avatar and whether others may see them
+      // (profile_picture.dart, avatar_editor_screen.dart, main.dart).
       allow update: if request.auth != null
         && request.auth.uid == uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['profilePictureUrl']);
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['profilePictureUrl', 'avatar', 'avatarHidden', 'profileImage'])
+        && validPicture(request.resource.data);
 
       allow delete: if false;
 
