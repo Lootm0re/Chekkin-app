@@ -3,6 +3,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import 'check_in_place.dart';
 import 'location_access.dart';
 
 /// Dev-only location override, for testing check-ins away from a place.
@@ -22,8 +23,8 @@ class _MapScreenState extends State<MapScreen> {
   Position? currentPosition;
   Set<Marker> markers = {};
 
-  String? nearbyEligiblePlaceId;
-  String? nearbyEligiblePlaceName;
+  // The place in range that the check-in panel is showing.
+  CheckInPlace? selectedPlace;
   bool isCheckingIn = false;
   bool isLoadingPlaces = false;
 
@@ -34,9 +35,11 @@ class _MapScreenState extends State<MapScreen> {
   Position? devFakePosition;
 
   final TextEditingController buddyUsernameController = TextEditingController();
+  final TextEditingController codeController = TextEditingController();
   final FirebaseFunctions functions = FirebaseFunctions.instance;
 
   static const double checkInRangeMeters = 22;
+  static const int codeLength = 6; // keep in sync with BUSINESS_CODE_DIGITS
 
   // Hides Google's own place icons: tapping them opens Google's info popup,
   // which the app can't hook into. The app shows check-in places as markers.
@@ -94,8 +97,7 @@ class _MapScreenState extends State<MapScreen> {
         isMocked: true,
       );
       currentPosition = devFakePosition;
-      nearbyEligiblePlaceId = null;
-      nearbyEligiblePlaceName = null;
+      selectedPlace = null;
     });
     mapController?.animateCamera(CameraUpdate.newLatLng(target));
     _loadNearbyPlaces(devFakePosition!);
@@ -104,8 +106,7 @@ class _MapScreenState extends State<MapScreen> {
   void _devClearTeleport() {
     setState(() {
       devFakePosition = null;
-      nearbyEligiblePlaceId = null;
-      nearbyEligiblePlaceName = null;
+      selectedPlace = null;
     });
     _getUserLocation().then((_) {
       if (currentPosition != null) {
@@ -137,15 +138,15 @@ class _MapScreenState extends State<MapScreen> {
 
       List places = response.data['places'];
       Set<Marker> newMarkers = {};
-      for (var place in places) {
-        String id = place['id'];
-        String name = place['name'];
+      for (var data in places) {
+        CheckInPlace place = CheckInPlace.fromMap(data);
         newMarkers.add(
           Marker(
-            markerId: MarkerId(id),
-            position: LatLng((place['latitude'] as num).toDouble(), (place['longitude'] as num).toDouble()),
-            infoWindow: InfoWindow(title: name),
-            onTap: () => _selectPlace(id, name, (place['latitude'] as num).toDouble(), (place['longitude'] as num).toDouble()),
+            markerId: MarkerId(place.id),
+            position: place.position,
+            icon: BitmapDescriptor.defaultMarkerWithHue(place.category.markerHue),
+            infoWindow: InfoWindow(title: place.name, snippet: place.category.label),
+            onTap: () => _selectPlace(place),
           ),
         );
       }
@@ -170,7 +171,7 @@ class _MapScreenState extends State<MapScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _selectPlace(String placeId, String placeName, double placeLat, double placeLng) async {
+  Future<void> _selectPlace(CheckInPlace place) async {
     // You may have walked here since the map opened, so measure from where
     // you are now.
     try {
@@ -184,20 +185,15 @@ class _MapScreenState extends State<MapScreen> {
     double distance = Geolocator.distanceBetween(
       currentPosition!.latitude,
       currentPosition!.longitude,
-      placeLat,
-      placeLng,
+      place.position.latitude,
+      place.position.longitude,
     );
 
     if (distance <= checkInRangeMeters) {
-      setState(() {
-        nearbyEligiblePlaceId = placeId;
-        nearbyEligiblePlaceName = placeName;
-      });
+      if (selectedPlace?.id != place.id) codeController.clear();
+      setState(() => selectedPlace = place);
     } else {
-      setState(() {
-        nearbyEligiblePlaceId = null;
-        nearbyEligiblePlaceName = null;
-      });
+      setState(() => selectedPlace = null);
       String message = 'Too far away - get within ${checkInRangeMeters.toInt()}m to check in '
           '(currently ${distance.toStringAsFixed(0)}m away)';
       if (devTools) {
@@ -206,8 +202,8 @@ class _MapScreenState extends State<MapScreen> {
           action: SnackBarAction(
             label: 'DEV: Teleport here',
             onPressed: () {
-              _devTeleport(LatLng(placeLat, placeLng));
-              _selectPlace(placeId, placeName, placeLat, placeLng);
+              _devTeleport(place.position);
+              _selectPlace(place);
             },
           ),
         ));
@@ -218,12 +214,13 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _handleCheckIn() async {
-    if (nearbyEligiblePlaceId == null || isCheckingIn) return;
+    CheckInPlace? place = selectedPlace;
+    if (place == null || isCheckingIn) return;
 
     setState(() => isCheckingIn = true);
 
-    String placeId = nearbyEligiblePlaceId!;
-    String placeName = nearbyEligiblePlaceName!;
+    String placeId = place.id;
+    String placeName = place.name;
     String buddyUsername = buddyUsernameController.text.trim().replaceFirst('@', '');
     int? pointsEarned;
     String? buddyMessage;
@@ -234,6 +231,7 @@ class _MapScreenState extends State<MapScreen> {
         'placeId': placeId,
         'deviceLatitude': currentPosition!.latitude,
         'deviceLongitude': currentPosition!.longitude,
+        if (place.requiresCode) 'code': codeController.text.trim(),
       });
 
       pointsEarned = (response.data['pointsEarned'] as num).toInt();
@@ -248,12 +246,15 @@ class _MapScreenState extends State<MapScreen> {
       debugPrint('Check-in failed: $e');
       _showSnackBar('Something went wrong. Please check your connection and try again.');
     } finally {
+      // On failure the panel stays open, so a mistyped code can be retried.
       if (mounted) {
         setState(() {
           isCheckingIn = false;
-          nearbyEligiblePlaceId = null;
-          nearbyEligiblePlaceName = null;
-          buddyUsernameController.clear();
+          codeController.clear();
+          if (pointsEarned != null) {
+            selectedPlace = null;
+            buddyUsernameController.clear();
+          }
         });
       }
     }
@@ -400,6 +401,13 @@ class _MapScreenState extends State<MapScreen> {
             onLongPress: devTools ? _devTeleport : null,
           ),
 
+          Positioned(
+            top: devTools ? 44 : 8,
+            left: 8,
+            right: 8,
+            child: const IgnorePointer(child: Center(child: PlaceCategoryLegend())),
+          ),
+
           if (devTools)
             Positioned(
               top: 8,
@@ -423,7 +431,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
 
-          if (nearbyEligiblePlaceName != null)
+          if (selectedPlace != null)
             Positioned(
               bottom: 30,
               left: 20,
@@ -431,6 +439,28 @@ class _MapScreenState extends State<MapScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (selectedPlace!.requiresCode) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: selectedPlace!.category.color, width: 2),
+                      ),
+                      child: TextField(
+                        controller: codeController,
+                        keyboardType: TextInputType.number,
+                        maxLength: codeLength,
+                        decoration: InputDecoration(
+                          hintText: 'Code from the staff at ${selectedPlace!.name}',
+                          border: InputBorder.none,
+                          counterText: '',
+                          icon: const Icon(Icons.pin),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
@@ -446,18 +476,25 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: isCheckingIn ? null : _handleCheckIn,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      minimumSize: const Size(double.infinity, 0),
-                    ),
-                    child: isCheckingIn
-                        ? const SizedBox(
-                            height: 20, width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                          )
-                        : Text('Check In at $nearbyEligiblePlaceName'),
+                  // Rebuilds as the code is typed, to enable the button.
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: codeController,
+                    builder: (context, code, _) {
+                      bool needsCode = selectedPlace!.requiresCode && code.text.trim().length != codeLength;
+                      return ElevatedButton(
+                        onPressed: isCheckingIn || needsCode ? null : _handleCheckIn,
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          minimumSize: const Size(double.infinity, 0),
+                        ),
+                        child: isCheckingIn
+                            ? const SizedBox(
+                                height: 20, width: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : Text('Check In at ${selectedPlace!.name}'),
+                      );
+                    },
                   ),
                 ],
               ),

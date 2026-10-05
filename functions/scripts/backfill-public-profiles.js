@@ -4,30 +4,14 @@
 //
 //   node scripts/backfill-public-profiles.js [--dry-run]
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
-const { Firestore } = require('@google-cloud/firestore'); // installed with firebase-admin
-const { OAuth2Client } = require('google-auth-library');
-
-const firebaseTools = path.join(execSync('npm root -g').toString().trim(), 'firebase-tools');
-const configstore = require(path.join(firebaseTools, 'lib/configstore')).configstore;
-const api = require(path.join(firebaseTools, 'lib/api'));
+const { cliFirestore } = require('./cli-firestore');
 
 // Same fields as PUBLIC_PROFILE_FIELDS in index.js.
 const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points', 'profilePictureUrl'];
 
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
-  const projectId = JSON.parse(fs.readFileSync(path.join(__dirname, '../../.firebaserc'), 'utf8')).projects.default;
-  const tokens = configstore.get('tokens');
-  if (!tokens?.refresh_token) throw new Error('Not logged in - run `firebase login` first.');
-
-  // The Admin SDK only takes service-account or default credentials, so use
-  // the Firestore client directly with the CLI's OAuth login.
-  const authClient = new OAuth2Client({ clientId: api.clientId(), clientSecret: api.clientSecret() });
-  authClient.setCredentials({ refresh_token: tokens.refresh_token });
-  const db = new Firestore({ projectId, authClient });
+  const db = cliFirestore();
   const [users, profiles] = await Promise.all([
     db.collection('users').get(),
     db.collection('publicProfiles').get(),

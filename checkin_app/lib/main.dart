@@ -9,6 +9,7 @@ import 'rewards_screen.dart';
 import 'phone_verify_screen.dart';
 import 'leaderboard_screen.dart';
 import 'profile_picture.dart';
+import 'business_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -180,6 +181,14 @@ class ProfileScreen extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text('Points: ${data['points']}', style: const TextStyle(fontSize: 18)),
                 const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.storefront),
+                  label: const Text('My Business'),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const BusinessScreen()),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 ElevatedButton(
                   onPressed: () => FirebaseAuth.instance.signOut(),
                   child: const Text('Log Out'),

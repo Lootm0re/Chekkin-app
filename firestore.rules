@@ -32,7 +32,7 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // placeCheckIns: written by performCheckIn only.
+      // placeCheckIns and codeAttempts: written by performCheckIn only.
       match /{sub=**} {
         allow read, write: if false;
       }
@@ -46,7 +46,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // buddyCheckins, checkIns, places, phoneNumbers, and anything else.
+    // Business claims, written by requestBusinessClaim and
+    // scripts/business-claims.js. Owners read their own for the Business
+    // screen.
+    match /businesses/{placeId} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.ownerUid;
+      allow write: if false;
+    }
+
+    // businessSecrets, buddyCheckins, checkIns, places, phoneNumbers, and anything else.
     match /{document=**} {
       allow read, write: if false;
     }
