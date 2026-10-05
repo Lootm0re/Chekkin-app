@@ -282,3 +282,115 @@ exports.performCheckIn = onCall(async (request) => {
   logger.info('Checked in', { uid, placeId, pointsEarned });
   return { pointsEarned, placeName: place.name };
 });
+
+// ---------------------------------------------------------------------------
+// Buddy check-ins
+//
+// Two friends who check in at the same place within BUDDY_WINDOW_MINUTES of
+// each other, and each name the other, both earn BUDDY_BONUS_POINTS.
+//
+// Each request is stored at buddyCheckins/{placeId}_{initiatorUid}_{selectedUid},
+// so the friend's matching request is a single document read inside the
+// transaction (no composite index, and two simultaneous calls can't both pay
+// out or both miss each other).
+// ---------------------------------------------------------------------------
+
+const BUDDY_WINDOW_MINUTES = 5; // keep in sync with the message in MapScreen
+const BUDDY_BONUS_POINTS = 50;
+
+function buddyDocId(placeId, initiatorUid, selectedUid) {
+  return `${placeId}_${initiatorUid}_${selectedUid}`;
+}
+
+/**
+ * Pairs the caller's check-in at a place with a friend's.
+ *
+ * The caller must have checked in at the place (via performCheckIn) within the
+ * last BUDDY_WINDOW_MINUTES, which is what proves they're actually there. If
+ * the friend already named the caller at the same place within the window,
+ * both get the bonus; otherwise the caller's request waits for the friend.
+ */
+exports.attemptBuddyCheckIn = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to check in with a buddy.');
+  }
+  const placeId = request.data?.locationId;
+  if (typeof placeId !== 'string' || !/^[A-Za-z0-9_-]{1,300}$/.test(placeId)) {
+    throw new HttpsError('invalid-argument', 'A valid place is required.');
+  }
+  const rawUsername = request.data?.friendUsername;
+  const friendUsername = typeof rawUsername === 'string'
+    ? rawUsername.trim().replace(/^@/, '').toLowerCase()
+    : '';
+  if (!friendUsername) {
+    throw new HttpsError('invalid-argument', 'Enter your friend\'s username.');
+  }
+
+  const db = getFirestore();
+  const friends = await db.collection('users').where('username', '==', friendUsername).limit(1).get();
+  if (friends.empty) {
+    throw new HttpsError('not-found', `No user found with the username @${friendUsername}.`);
+  }
+  const friendUid = friends.docs[0].id;
+  if (friendUid === uid) {
+    throw new HttpsError('invalid-argument', 'You can\'t buddy check-in with yourself.');
+  }
+
+  const userRef = db.collection('users').doc(uid);
+  const friendRef = db.collection('users').doc(friendUid);
+  const lastCheckInRef = userRef.collection('placeCheckIns').doc(placeId);
+  const mineRef = db.collection('buddyCheckins').doc(buddyDocId(placeId, uid, friendUid));
+  const theirsRef = db.collection('buddyCheckins').doc(buddyDocId(placeId, friendUid, uid));
+  const windowMs = BUDDY_WINDOW_MINUTES * 60 * 1000;
+
+  const matched = await db.runTransaction(async (tx) => {
+    const [userDoc, lastDoc, mineDoc, theirsDoc] = await Promise.all([
+      tx.get(userRef), tx.get(lastCheckInRef), tx.get(mineRef), tx.get(theirsRef),
+    ]);
+    const now = Date.now();
+
+    if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
+      throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
+    }
+
+    const checkedInAt = lastDoc.exists ? lastDoc.get('lastCheckInAt')?.toMillis() : null;
+    if (!checkedInAt || now - checkedInAt > windowMs) {
+      throw new HttpsError('failed-precondition',
+        `Check in at this place first - buddy check-ins only work within ${BUDDY_WINDOW_MINUTES} minutes of checking in.`);
+    }
+
+    // A confirmed pairing for this check-in has already paid out.
+    const mineConfirmedAt = mineDoc.exists && mineDoc.get('status') === 'confirmed'
+      ? mineDoc.get('confirmedAt')?.toMillis()
+      : null;
+    if (mineConfirmedAt && mineConfirmedAt >= checkedInAt) {
+      throw new HttpsError('already-exists', 'You\'ve already earned the buddy bonus with this friend here.');
+    }
+
+    const theirsAt = theirsDoc.exists && theirsDoc.get('status') === 'pending'
+      ? theirsDoc.get('createdAt')?.toMillis()
+      : null;
+    const serverNow = FieldValue.serverTimestamp();
+
+    if (theirsAt && now - theirsAt <= windowMs) {
+      const confirmed = { status: 'confirmed', confirmedAt: serverNow };
+      tx.update(theirsRef, confirmed);
+      tx.set(mineRef, {
+        placeId, initiatorId: uid, selectedUserId: friendUid, createdAt: serverNow, ...confirmed,
+      });
+      tx.update(userRef, { points: FieldValue.increment(BUDDY_BONUS_POINTS) });
+      tx.update(friendRef, { points: FieldValue.increment(BUDDY_BONUS_POINTS) });
+      return true;
+    }
+
+    // No match yet: (re)start the caller's request so the friend can match it.
+    tx.set(mineRef, {
+      placeId, initiatorId: uid, selectedUserId: friendUid, status: 'pending', createdAt: serverNow,
+    });
+    return false;
+  });
+
+  logger.info('attemptBuddyCheckIn', { uid, friendUid, placeId, matched });
+  return { matched, bonusPoints: matched ? BUDDY_BONUS_POINTS : 0 };
+});

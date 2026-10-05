@@ -5,5 +5,8 @@
       "codebase": "app",
       "runtime": "nodejs22"
     }
-  ]
+  ],
+  "firestore": {
+    "rules": "firestore.rules"
+  }
 }

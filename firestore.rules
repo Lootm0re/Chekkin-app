@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// Points, phone verification, check-ins, places and buddy check-ins are only
+// written by Cloud Functions (admin access bypasses these rules). The app may
+// only create its own profile and change its profile picture.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{uid} {
+      // Signed-in users read profiles for the leaderboard and the username
+      // check at sign-up.
+      allow read: if request.auth != null;
+
+      // Sign-up (auth_screen.dart): starts with no points and an unverified phone.
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+             'name', 'username', 'email', 'points', 'phoneVerified', 'dateOfBirth',
+             'homeLatitude', 'homeLongitude', 'homeLastChanged', 'createdAt'])
+        && request.resource.data.points == 0
+        && request.resource.data.phoneVerified == false
+        && request.resource.data.username is string
+        && request.resource.data.username.size() > 0
+        && request.resource.data.username == request.resource.data.username.lower()
+        && request.resource.data.homeLastChanged == request.time
+        && request.resource.data.createdAt == request.time;
+
+      // profile_picture.dart
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['profilePictureUrl']);
+
+      allow delete: if false;
+
+      // placeCheckIns: written by performCheckIn only.
+      match /{sub=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // buddyCheckins, checkIns, places, phoneNumbers, and anything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
