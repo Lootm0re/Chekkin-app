@@ -13,8 +13,10 @@ class LeaderboardScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Leaderboard')),
       body: StreamBuilder<QuerySnapshot>(
+        // Other users' private details live in users/{uid}; publicProfiles
+        // only holds what's shown here.
         stream: FirebaseFirestore.instance
-            .collection('users')
+            .collection('publicProfiles')
             .orderBy('points', descending: true)
             .limit(100)
             .snapshots(),

@@ -6,10 +6,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Private: email, date of birth, phone, home location. Other users see
+    // publicProfiles instead.
     match /users/{uid} {
-      // Signed-in users read profiles for the leaderboard and the username
-      // check at sign-up.
-      allow read: if request.auth != null;
+      allow read: if request.auth != null && request.auth.uid == uid;
 
       // Sign-up (auth_screen.dart): starts with no points and an unverified phone.
       allow create: if request.auth != null
@@ -36,6 +36,14 @@ service cloud.firestore {
       match /{sub=**} {
         allow read, write: if false;
       }
+    }
+
+    // name, username, points and profile picture, copied from users/{uid} by
+    // the syncPublicProfile function. Read by the leaderboard and the
+    // username check at sign-up.
+    match /publicProfiles/{uid} {
+      allow read: if request.auth != null;
+      allow write: if false;
     }
 
     // buddyCheckins, checkIns, places, phoneNumbers, and anything else.

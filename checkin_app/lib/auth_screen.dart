@@ -96,8 +96,8 @@ class _AuthScreenState extends State<AuthScreen> {
     // doesn't leave an auth user with no profile document.
     Position position = await getPositionWithPermission();
 
-    // Firestore rules only allow signed-in users to read the users
-    // collection, so the account has to exist before the username check.
+    // Firestore rules only allow signed-in users to read publicProfiles,
+    // so the account has to exist before the username check.
     // A user may already be signed in without a profile (e.g. an earlier
     // sign-up failed halfway) - in that case finish their profile instead.
     User? user = auth.currentUser;
@@ -113,7 +113,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
     try {
       QuerySnapshot existing = await db
-          .collection('users')
+          .collection('publicProfiles')
           .where('username', isEqualTo: desiredUsername)
           .limit(1)
           .get();

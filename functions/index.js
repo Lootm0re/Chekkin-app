@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
@@ -66,6 +67,44 @@ exports.confirmPhoneVerified = onCall(async (request) => {
     logger.error('confirmPhoneVerified failed', { uid, code: err.code, message: err.message, stack: err.stack });
     throw new HttpsError('internal', `Phone verification failed on the server: ${err.message}`, { code: err.code ?? null });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Public profiles
+//
+// users/{uid} is private to its owner (email, date of birth, phone, home
+// location). The fields other users may see - for the leaderboard and buddy
+// check-ins - are mirrored to publicProfiles/{uid}, which only this function
+// writes. Points stay authoritative on users/{uid}; the copy follows within
+// a few seconds.
+// ---------------------------------------------------------------------------
+
+const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points', 'profilePictureUrl'];
+
+function publicProfileOf(userData) {
+  const profile = {};
+  for (const field of PUBLIC_PROFILE_FIELDS) {
+    if (userData[field] !== undefined) profile[field] = userData[field];
+  }
+  return profile;
+}
+
+exports.syncPublicProfile = onDocumentWritten('users/{uid}', async (event) => {
+  const ref = getFirestore().collection('publicProfiles').doc(event.params.uid);
+  const after = event.data?.after;
+  if (!after?.exists) {
+    await ref.delete();
+    return;
+  }
+
+  const before = event.data.before;
+  const profile = publicProfileOf(after.data());
+  const unchanged = before?.exists &&
+    PUBLIC_PROFILE_FIELDS.every((f) => before.get(f) === after.get(f));
+  if (unchanged) return;
+
+  // set() without merge, so a field removed from users disappears here too.
+  await ref.set(profile);
 });
 
 // ---------------------------------------------------------------------------
