@@ -21,6 +21,18 @@ class LeaderboardScreen extends StatelessWidget {
             .limit(100)
             .snapshots(),
         builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            debugPrint('Leaderboard failed: ${snapshot.error}');
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'Couldn\'t load the leaderboard. Please try again later.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }

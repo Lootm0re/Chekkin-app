@@ -5,6 +5,11 @@ import 'package:cloud_functions/cloud_functions.dart';
 
 import 'location_access.dart';
 
+/// Dev-only location override, for testing check-ins away from a place.
+/// Off unless built with `--dart-define=DEV_TOOLS=true`; as a compile-time
+/// constant, release builds without it don't contain the dev code at all.
+const bool devTools = bool.fromEnvironment('DEV_TOOLS');
+
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
@@ -24,6 +29,9 @@ class _MapScreenState extends State<MapScreen> {
 
   String? locationError;
   bool locationPermanentlyDenied = false;
+
+  // Dev tools only: used instead of the real location while set.
+  Position? devFakePosition;
 
   final TextEditingController buddyUsernameController = TextEditingController();
   final FirebaseFunctions functions = FirebaseFunctions.instance;
@@ -49,7 +57,7 @@ class _MapScreenState extends State<MapScreen> {
     });
 
     try {
-      Position position = await getPositionWithPermission();
+      Position position = await _readPosition();
       if (!mounted) return;
 
       setState(() {
@@ -63,6 +71,49 @@ class _MapScreenState extends State<MapScreen> {
       debugPrint('Failed to get location: $e');
       _showLocationError('Couldn\'t get your location. Please try again.');
     }
+  }
+
+  Future<Position> _readPosition() async {
+    return devFakePosition ?? await getPositionWithPermission();
+  }
+
+  /// Dev tools only: pretend to be at [target] until the override is cleared.
+  void _devTeleport(LatLng target) {
+    setState(() {
+      devFakePosition = Position(
+        latitude: target.latitude,
+        longitude: target.longitude,
+        timestamp: DateTime.now(),
+        accuracy: 0,
+        altitude: 0,
+        altitudeAccuracy: 0,
+        heading: 0,
+        headingAccuracy: 0,
+        speed: 0,
+        speedAccuracy: 0,
+        isMocked: true,
+      );
+      currentPosition = devFakePosition;
+      nearbyEligiblePlaceId = null;
+      nearbyEligiblePlaceName = null;
+    });
+    mapController?.animateCamera(CameraUpdate.newLatLng(target));
+    _loadNearbyPlaces(devFakePosition!);
+  }
+
+  void _devClearTeleport() {
+    setState(() {
+      devFakePosition = null;
+      nearbyEligiblePlaceId = null;
+      nearbyEligiblePlaceName = null;
+    });
+    _getUserLocation().then((_) {
+      if (currentPosition != null) {
+        mapController?.animateCamera(CameraUpdate.newLatLng(
+          LatLng(currentPosition!.latitude, currentPosition!.longitude),
+        ));
+      }
+    });
   }
 
   void _showLocationError(String message, {bool permanentlyDenied = false}) {
@@ -123,7 +174,7 @@ class _MapScreenState extends State<MapScreen> {
     // You may have walked here since the map opened, so measure from where
     // you are now.
     try {
-      Position position = await getPositionWithPermission();
+      Position position = await _readPosition();
       if (!mounted) return;
       setState(() => currentPosition = position);
     } catch (e) {
@@ -147,10 +198,22 @@ class _MapScreenState extends State<MapScreen> {
         nearbyEligiblePlaceId = null;
         nearbyEligiblePlaceName = null;
       });
-      _showSnackBar(
-        'Too far away - get within ${checkInRangeMeters.toInt()}m to check in '
-        '(currently ${distance.toStringAsFixed(0)}m away)',
-      );
+      String message = 'Too far away - get within ${checkInRangeMeters.toInt()}m to check in '
+          '(currently ${distance.toStringAsFixed(0)}m away)';
+      if (devTools) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(message),
+          action: SnackBarAction(
+            label: 'DEV: Teleport here',
+            onPressed: () {
+              _devTeleport(LatLng(placeLat, placeLng));
+              _selectPlace(placeId, placeName, placeLat, placeLng);
+            },
+          ),
+        ));
+      } else {
+        _showSnackBar(message);
+      }
     }
   }
 
@@ -264,6 +327,12 @@ class _MapScreenState extends State<MapScreen> {
       appBar: AppBar(
         title: const Text('Check In'),
         actions: [
+          if (devFakePosition != null)
+            IconButton(
+              tooltip: 'DEV: Back to real location',
+              icon: const Icon(Icons.gps_off, color: Colors.deepOrange),
+              onPressed: _devClearTeleport,
+            ),
           IconButton(
             tooltip: 'Find places near me',
             icon: isLoadingPlaces
@@ -282,9 +351,42 @@ class _MapScreenState extends State<MapScreen> {
             ),
             myLocationEnabled: true,
             style: _hidePointsOfInterestStyle,
-            markers: markers,
+            markers: {
+              ...markers,
+              if (devFakePosition != null)
+                Marker(
+                  markerId: const MarkerId('dev-fake-position'),
+                  position: LatLng(devFakePosition!.latitude, devFakePosition!.longitude),
+                  icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+                  infoWindow: const InfoWindow(title: 'DEV: Pretend location'),
+                ),
+            },
             onMapCreated: (controller) => mapController = controller,
+            onLongPress: devTools ? _devTeleport : null,
           ),
+
+          if (devTools)
+            Positioned(
+              top: 8,
+              left: 8,
+              right: 8,
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.deepOrange.withValues(alpha: 0.9),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    devFakePosition != null
+                        ? 'DEV: Using a pretend location. Long-press to move it.'
+                        : 'DEV: Long-press the map to pretend you\'re there.',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            ),
 
           if (nearbyEligiblePlaceName != null)
             Positioned(
