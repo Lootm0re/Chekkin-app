@@ -222,58 +222,31 @@ class _MapScreenState extends State<MapScreen> {
 
     setState(() => isCheckingIn = true);
 
+    String placeId = nearbyEligiblePlaceId!;
+    String placeName = nearbyEligiblePlaceName!;
+    String buddyUsername = buddyUsernameController.text.trim().replaceFirst('@', '');
+    int? pointsEarned;
+    String? buddyMessage;
+
     try {
       HttpsCallable callable = functions.httpsCallable('performCheckIn');
       final response = await callable.call({
-        'placeId': nearbyEligiblePlaceId,
+        'placeId': placeId,
         'deviceLatitude': currentPosition!.latitude,
         'deviceLongitude': currentPosition!.longitude,
       });
 
-      if (!mounted) return;
-      int pointsEarned = response.data['pointsEarned'];
+      pointsEarned = (response.data['pointsEarned'] as num).toInt();
+      placeName = response.data['placeName'] ?? placeName;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Checked in at $nearbyEligiblePlaceName! +$pointsEarned points')),
-      );
-
-      String buddyUsername = buddyUsernameController.text.trim();
       if (buddyUsername.isNotEmpty) {
-        try {
-          HttpsCallable buddyCallable = functions.httpsCallable('attemptBuddyCheckIn');
-          final buddyResponse = await buddyCallable.call({
-            'locationId': nearbyEligiblePlaceId,
-            'friendUsername': buddyUsername,
-          });
-
-          if (!mounted) return;
-          bool matched = buddyResponse.data['matched'];
-          if (matched) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Buddy bonus! You and your friend both earned extra points.')),
-            );
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Waiting for your friend to check in and select you too (within 5 minutes).')),
-            );
-          }
-        } on FirebaseFunctionsException catch (e) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(e.message ?? 'Buddy check-in failed.')),
-          );
-        }
+        buddyMessage = await _attemptBuddyCheckIn(placeId, buddyUsername);
       }
     } on FirebaseFunctionsException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message ?? 'Check-in failed. Please try again.')),
-      );
+      _showSnackBar(e.message ?? 'Check-in failed. Please try again.');
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Something went wrong. Please check your connection and try again.')),
-      );
+      debugPrint('Check-in failed: $e');
+      _showSnackBar('Something went wrong. Please check your connection and try again.');
     } finally {
       if (mounted) {
         setState(() {
@@ -284,6 +257,68 @@ class _MapScreenState extends State<MapScreen> {
         });
       }
     }
+
+    if (pointsEarned != null && mounted) {
+      _showCheckInConfirmation(placeName, pointsEarned, buddyMessage);
+    }
+  }
+
+  /// Returns what to tell the user about the buddy check-in. A failure here
+  /// doesn't undo the check-in itself, so it's reported rather than thrown.
+  Future<String> _attemptBuddyCheckIn(String placeId, String friendUsername) async {
+    try {
+      final response = await functions.httpsCallable('attemptBuddyCheckIn').call({
+        'locationId': placeId,
+        'friendUsername': friendUsername,
+      });
+      if (response.data['matched'] == true) {
+        return 'Buddy bonus! You and @$friendUsername each earned '
+            '+${response.data['bonusPoints']} points.';
+      }
+      return 'Waiting for @$friendUsername to check in here and pick you too '
+          '(within 5 minutes).';
+    } on FirebaseFunctionsException catch (e) {
+      return e.message ?? 'Buddy check-in failed.';
+    } catch (e) {
+      debugPrint('Buddy check-in failed: $e');
+      return 'Buddy check-in failed.';
+    }
+  }
+
+  // A dialog rather than a snackbar: the snackbar shows on the home screen's
+  // Scaffold at the bottom of the map, where it was easy to miss.
+  void _showCheckInConfirmation(String placeName, int pointsEarned, String? buddyMessage) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
+        title: const Text('Checked in!'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(placeName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+            const SizedBox(height: 12),
+            Text(
+              '+$pointsEarned points',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green[700],
+                  ),
+            ),
+            if (buddyMessage != null) ...[
+              const SizedBox(height: 16),
+              Text(buddyMessage, textAlign: TextAlign.center),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
