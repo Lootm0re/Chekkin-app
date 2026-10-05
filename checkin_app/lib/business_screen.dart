@@ -39,7 +39,8 @@ class BusinessScreen extends StatelessWidget {
                   padding: EdgeInsets.only(bottom: 16),
                   child: Text(
                     'Run a restaurant, café or hotel? Register it, and once it\'s approved, customers '
-                    'enter the code shown here when they check in.',
+                    'enter the code shown here when they check in. Each code works for one customer, who can bring '
+                    'friends along as a group.',
                   ),
                 ),
               for (var doc in docs) _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
@@ -89,7 +90,13 @@ class _BusinessCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             switch (status) {
-              'approved' => _BusinessCode(placeId: placeId),
+              'approved' => Column(
+                  children: [
+                    _BusinessCode(placeId: placeId, codeSeq: data['codeSeq']),
+                    const Divider(height: 32),
+                    _BusinessStats(placeId: placeId, codeSeq: data['codeSeq']),
+                  ],
+                ),
               'rejected' => const Text('This registration wasn\'t approved.'),
               _ => const Text('Waiting for approval. Check-ins here stay location-only until then.'),
             },
@@ -100,11 +107,14 @@ class _BusinessCard extends StatelessWidget {
   }
 }
 
-/// The current check-in code, refreshed when it changes.
+/// The current check-in code. Each code works for one customer; when it's
+/// used, expires or is retired, businesses/{placeId}.codeSeq changes and the
+/// new code is fetched.
 class _BusinessCode extends StatefulWidget {
   final String placeId;
+  final int? codeSeq;
 
-  const _BusinessCode({required this.placeId});
+  const _BusinessCode({required this.placeId, required this.codeSeq});
 
   @override
   State<_BusinessCode> createState() => _BusinessCodeState();
@@ -112,16 +122,20 @@ class _BusinessCode extends StatefulWidget {
 
 class _BusinessCodeState extends State<_BusinessCode> {
   String? code;
+  int? seq;
   DateTime? expiresAt;
   String? error;
+  String? notice;
   Timer? ticker;
+  Timer? noticeTimer;
   bool isLoading = false;
+  bool isRetiring = false;
 
   @override
   void initState() {
     super.initState();
     _loadCode();
-    // Redraws the countdown, and fetches the next code once this one expires.
+    // Redraws the countdown, and fetches a new code once this one expires.
     ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (expiresAt != null && DateTime.now().isAfter(expiresAt!)) {
         _loadCode();
@@ -131,9 +145,37 @@ class _BusinessCodeState extends State<_BusinessCode> {
   }
 
   @override
+  void didUpdateWidget(_BusinessCode old) {
+    super.didUpdateWidget(old);
+    // A customer used the code (or it was retired elsewhere).
+    if (widget.codeSeq != null && seq != null && widget.codeSeq! > seq! && !isRetiring) {
+      _showNotice('Code used by a customer. Here\'s a new one.');
+      _loadCode();
+    }
+  }
+
+  @override
   void dispose() {
     ticker?.cancel();
+    noticeTimer?.cancel();
     super.dispose();
+  }
+
+  void _showNotice(String message) {
+    noticeTimer?.cancel();
+    setState(() => notice = message);
+    noticeTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) setState(() => notice = null);
+    });
+  }
+
+  void _setCode(Map data) {
+    setState(() {
+      code = data['code'];
+      seq = data['seq'];
+      expiresAt = DateTime.fromMillisecondsSinceEpoch((data['expiresAt'] as num).toInt());
+      error = null;
+    });
   }
 
   Future<void> _loadCode() async {
@@ -143,21 +185,33 @@ class _BusinessCodeState extends State<_BusinessCode> {
       final response = await FirebaseFunctions.instance.httpsCallable('getBusinessCode').call({
         'placeId': widget.placeId,
       });
-      if (!mounted) return;
-      setState(() {
-        code = response.data['code'];
-        expiresAt = DateTime.fromMillisecondsSinceEpoch((response.data['expiresAt'] as num).toInt());
-        error = null;
-      });
+      if (mounted) _setCode(response.data);
     } on FirebaseFunctionsException catch (e) {
-      if (!mounted) return;
-      setState(() => error = e.message ?? 'Couldn\'t load the code.');
+      if (mounted) setState(() => error = e.message ?? 'Couldn\'t load the code.');
     } catch (e) {
       debugPrint('Loading business code failed: $e');
-      if (!mounted) return;
-      setState(() => error = 'Couldn\'t load the code. Please check your connection.');
+      if (mounted) setState(() => error = 'Couldn\'t load the code. Please check your connection.');
     } finally {
       isLoading = false;
+    }
+  }
+
+  Future<void> _retire() async {
+    setState(() => isRetiring = true);
+    try {
+      final response = await FirebaseFunctions.instance.httpsCallable('newBusinessCode').call({
+        'placeId': widget.placeId,
+      });
+      if (!mounted) return;
+      _setCode(response.data);
+      _showNotice('The old code no longer works.');
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) _showNotice(e.message ?? 'Couldn\'t make a new code.');
+    } catch (e) {
+      debugPrint('Retiring business code failed: $e');
+      if (mounted) _showNotice('Couldn\'t make a new code. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => isRetiring = false);
     }
   }
 
@@ -181,7 +235,7 @@ class _BusinessCodeState extends State<_BusinessCode> {
 
     return Column(
       children: [
-        const Text('Check-in code for customers'),
+        const Text('Check-in code for the next customer'),
         const SizedBox(height: 4),
         Text(
           '${code!.substring(0, 3)} ${code!.substring(3)}',
@@ -191,8 +245,143 @@ class _BusinessCodeState extends State<_BusinessCode> {
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
         ),
-        Text('Changes in $countdown', style: TextStyle(color: Colors.grey[600])),
+        Text('Works once. Expires in $countdown if unused.', style: TextStyle(color: Colors.grey[600])),
+        if (notice != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(notice!, style: TextStyle(color: Colors.green[800], fontWeight: FontWeight.w500)),
+          ),
+        const SizedBox(height: 8),
+        TextButton.icon(
+          onPressed: isRetiring ? null : _retire,
+          icon: isRetiring
+              ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.refresh),
+          label: const Text('New code'),
+        ),
       ],
+    );
+  }
+}
+
+/// Check-in counts for the owner. Counts only: owners never see who checked in.
+class _BusinessStats extends StatefulWidget {
+  final String placeId;
+  final int? codeSeq;
+
+  const _BusinessStats({required this.placeId, required this.codeSeq});
+
+  @override
+  State<_BusinessStats> createState() => _BusinessStatsState();
+}
+
+class _BusinessStatsState extends State<_BusinessStats> {
+  Map? stats;
+  String? error;
+  bool isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_BusinessStats old) {
+    super.didUpdateWidget(old);
+    // A code was used, so there's a new check-in.
+    if (widget.codeSeq != old.codeSeq) _load();
+  }
+
+  Future<void> _load() async {
+    if (isLoading) return;
+    setState(() => isLoading = true);
+    DateTime now = DateTime.now();
+    try {
+      final response = await FirebaseFunctions.instance.httpsCallable('getBusinessStats').call({
+        'placeId': widget.placeId,
+        'todayStart': DateTime(now.year, now.month, now.day).millisecondsSinceEpoch,
+      });
+      if (mounted) {
+        setState(() {
+          stats = response.data;
+          error = null;
+        });
+      }
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('Loading business stats failed: [${e.code}] ${e.message}');
+      if (mounted) setState(() => error = 'Couldn\'t load your stats.');
+    } catch (e) {
+      debugPrint('Loading business stats failed: $e');
+      if (mounted) setState(() => error = 'Couldn\'t load your stats. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget body;
+    if (stats == null) {
+      body = error != null
+          ? Text(error!)
+          : const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator());
+    } else {
+      num? average = stats!['averageGroupSize'];
+      body = Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        alignment: WrapAlignment.center,
+        children: [
+          _Stat(label: 'Today', value: '${stats!['today']}'),
+          _Stat(label: 'Last 7 days', value: '${stats!['week']}'),
+          _Stat(label: 'Since approval', value: '${stats!['sinceApproval']}'),
+          _Stat(label: 'Group check-ins', value: '${stats!['groupCheckIns']}'),
+          _Stat(label: 'Avg. group size', value: average == null ? '–' : '$average'),
+        ],
+      );
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            Text('Check-ins', style: Theme.of(context).textTheme.titleSmall),
+            const Spacer(),
+            IconButton(
+              tooltip: 'Refresh',
+              icon: const Icon(Icons.refresh, size: 20),
+              onPressed: isLoading ? null : _load,
+            ),
+          ],
+        ),
+        body,
+      ],
+    );
+  }
+}
+
+class _Stat extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _Stat({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 100,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          Text(value, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+          Text(label, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center),
+        ],
+      ),
     );
   }
 }

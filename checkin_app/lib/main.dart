@@ -10,6 +10,7 @@ import 'phone_verify_screen.dart';
 import 'leaderboard_screen.dart';
 import 'profile_picture.dart';
 import 'business_screen.dart';
+import 'friends_screen.dart';
 import 'avatar_editor_screen.dart';
 import 'user_avatar.dart';
 
@@ -233,6 +234,14 @@ class ProfileScreen extends StatelessWidget {
               const SizedBox(height: 8),
               Text('Points: ${data['points']}', style: const TextStyle(fontSize: 18)),
               const SizedBox(height: 24),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.people),
+                label: const Text('Friends'),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const FriendsScreen()),
+                ),
+              ),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 icon: const Icon(Icons.storefront),
                 label: const Text('My Business'),

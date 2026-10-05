@@ -4,7 +4,7 @@ const { isDeepStrictEqual } = require('util');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
-const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 
 initializeApp();
 
@@ -74,11 +74,11 @@ exports.confirmPhoneVerified = onCall(async (request) => {
 // Public profiles
 //
 // users/{uid} is private to its owner (email, date of birth, phone, home
-// location). The fields other users may see - for the leaderboard and buddy
-// check-ins - are mirrored to publicProfiles/{uid}, which only this function
-// writes. A user who hides their picture gets no photo or avatar there, so
-// others see the default icon. Points stay authoritative on users/{uid}; the copy follows within
-// a few seconds.
+// location). The fields other users may see - for the leaderboard, friends
+// and group check-ins - are mirrored to publicProfiles/{uid}, which only this
+// function writes. A user who hides their picture gets no photo or avatar
+// there, so others see the default icon. Points stay authoritative on
+// users/{uid}; the copy follows within a few seconds.
 // ---------------------------------------------------------------------------
 
 const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points'];
@@ -314,14 +314,56 @@ exports.nearbyPlaces = onCall(async (request) => {
   return { places };
 });
 
+// Group check-ins: at a registered business, the customer who uses the code
+// can invite up to GROUP_MAX_SIZE - 1 friends. Each friend joins from their
+// own phone (joinGroup) within GROUP_WINDOW_MINUTES, at the place. Everyone's
+// base points are multiplied by GROUP_MULTIPLIERS for the group's size, and
+// members are topped up as each friend joins.
+const GROUP_MAX_SIZE = 6;
+const GROUP_WINDOW_MINUTES = 10;
+const GROUP_MULTIPLIERS = { 1: 1, 2: 1.5, 3: 2, 4: 3, 5: 3.5, 6: 5 };
+
+/** Points for this user at this place: rarity times distance from home. */
+function basePoints(userDoc, place, timesCheckedIn) {
+  const homeLat = userDoc.get('homeLatitude');
+  const homeLng = userDoc.get('homeLongitude');
+  const homeKm = typeof homeLat === 'number' && typeof homeLng === 'number'
+    ? distanceMeters(homeLat, homeLng, place.latitude, place.longitude) / 1000
+    : 0;
+  return Math.round(rarityPoints(timesCheckedIn) * distanceMultiplier(homeKm));
+}
+
+function readUid(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9]{1,128}$/.test(value)) {
+    throw new HttpsError('invalid-argument', 'A valid user is required.');
+  }
+  return value;
+}
+
+/** The friends to invite to a group check-in; they must be on the caller's friends list. */
+async function readGroupFriends(db, uid, value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > GROUP_MAX_SIZE - 1) {
+    throw new HttpsError('invalid-argument', `Pick up to ${GROUP_MAX_SIZE - 1} friends.`);
+  }
+  const friendUids = [...new Set(value.map(readUid))].filter((f) => f !== uid);
+  if (friendUids.length === 0) return [];
+  const friendDocs = await db.getAll(...friendUids.map((f) => db.doc(`users/${uid}/friends/${f}`)));
+  if (friendDocs.some((d) => !d.exists)) {
+    throw new HttpsError('failed-precondition', 'You can only check in with people on your friends list.');
+  }
+  return friendUids;
+}
+
 /**
  * Checks the caller in at a place and awards points.
  *
  * The place's location and types come from the Places API, not the client.
  * The caller must be within CHECK_IN_RANGE_METERS of it and can check in at
  * the same place once every CHECK_IN_COOLDOWN_HOURS. At a restaurant, café or
- * hotel whose business has claimed it, the caller must also send the current
- * code from staff (see getBusinessCode).
+ * hotel whose business has registered, the caller must also give the
+ * business's current code, which then can't be used again, and may invite
+ * friends (friendUids) to join as a group.
  */
 exports.performCheckIn = onCall(async (request) => {
   const uid = request.auth?.uid;
@@ -351,13 +393,23 @@ exports.performCheckIn = onCall(async (request) => {
   const lastCheckInRef = db.collection('users').doc(uid).collection('placeCheckIns').doc(placeId);
   const checkInRef = db.collection('checkIns').doc();
 
-  if (BUSINESS_CATEGORIES.includes(place.category)) {
+  const requiresCode = BUSINESS_CATEGORIES.includes(place.category) &&
+    (await db.collection('businesses').doc(placeId).get()).get('status') === 'approved';
+  const friendUids = await readGroupFriends(db, uid, request.data?.friendUids);
+  if (friendUids.length > 0 && !requiresCode) {
+    throw new HttpsError('failed-precondition',
+      'Group check-ins are only available at registered restaurants, cafés and hotels.');
+  }
+
+  if (requiresCode) {
     // Checked first so a code can't be used up, or count as a wrong guess,
     // when the check-in would be refused anyway. The transaction below
     // checks again.
     throwIfCheckedInRecently(await lastCheckInRef.get(), place);
-    await checkBusinessCode(db, uid, place, request.data?.code);
+    await useBusinessCode(db, uid, place, request.data?.code);
   }
+
+  const groupRef = friendUids.length > 0 ? db.collection('groups').doc() : null;
 
   const pointsEarned = await db.runTransaction(async (tx) => {
     const [userDoc, placeDoc, lastDoc] = await Promise.all([
@@ -371,12 +423,7 @@ exports.performCheckIn = onCall(async (request) => {
     throwIfCheckedInRecently(lastDoc, place);
 
     const timesCheckedIn = placeDoc.exists ? (placeDoc.get('timesCheckedIn') ?? 0) : 0;
-    const homeLat = userDoc.get('homeLatitude');
-    const homeLng = userDoc.get('homeLongitude');
-    const homeKm = typeof homeLat === 'number' && typeof homeLng === 'number'
-      ? distanceMeters(homeLat, homeLng, place.latitude, place.longitude) / 1000
-      : 0;
-    const points = Math.round(rarityPoints(timesCheckedIn) * distanceMultiplier(homeKm));
+    const points = basePoints(userDoc, place, timesCheckedIn);
 
     const now = FieldValue.serverTimestamp();
     tx.set(placeRef, {
@@ -390,13 +437,162 @@ exports.performCheckIn = onCall(async (request) => {
     tx.set(lastCheckInRef, { lastCheckInAt: now });
     tx.set(checkInRef, {
       uid, placeId, placeName: place.name, points, distanceMeters: Math.round(distance), createdAt: now,
+      ...(groupRef ? { groupId: groupRef.id } : {}),
     });
     tx.update(userRef, { points: FieldValue.increment(points) });
+
+    if (groupRef) {
+      const expiresAt = Timestamp.fromMillis(Date.now() + GROUP_WINDOW_MINUTES * 60 * 1000);
+      tx.set(groupRef, {
+        placeId,
+        placeName: place.name,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        primaryUid: uid,
+        members: [uid],
+        invited: friendUids,
+        // Everyone's base points use the place's rarity when the group started.
+        rarityCount: timesCheckedIn,
+        basePoints: { [uid]: points },
+        awarded: { [uid]: points },
+        size: 1,
+        status: 'open',
+        createdAt: now,
+        expiresAt,
+      });
+      for (const friendUid of friendUids) {
+        tx.set(db.doc(`users/${friendUid}/groupInvites/${groupRef.id}`), {
+          placeId,
+          placeName: place.name,
+          fromUid: uid,
+          fromName: userDoc.get('name') ?? '',
+          fromUsername: userDoc.get('username') ?? '',
+          expiresAt,
+        });
+      }
+    }
     return points;
   });
 
-  logger.info('Checked in', { uid, placeId, pointsEarned });
-  return { pointsEarned, placeName: place.name };
+  logger.info('Checked in', { uid, placeId, pointsEarned, groupId: groupRef?.id, invited: friendUids.length });
+  return {
+    pointsEarned,
+    placeName: place.name,
+    groupId: groupRef?.id ?? null,
+    invited: friendUids.length,
+    groupWindowMinutes: GROUP_WINDOW_MINUTES,
+  };
+});
+
+/**
+ * Joins a group check-in the caller was invited to. The caller must be at the
+ * place, and hasn't checked in there in the last CHECK_IN_COOLDOWN_HOURS;
+ * joining counts as their check-in. Everyone in the group, including the
+ * caller, is brought up to their base points times the new size's multiplier.
+ */
+exports.joinGroup = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to join a group check-in.');
+  }
+  const groupId = request.data?.groupId;
+  if (typeof groupId !== 'string' || !/^[A-Za-z0-9]{1,64}$/.test(groupId)) {
+    throw new HttpsError('invalid-argument', 'A valid group is required.');
+  }
+  const device = readCoordinates(request.data, 'deviceLatitude', 'deviceLongitude');
+
+  const db = getFirestore();
+  const groupRef = db.collection('groups').doc(groupId);
+  const inviteRef = db.doc(`users/${uid}/groupInvites/${groupId}`);
+  const first = await groupRef.get();
+  if (!first.exists) {
+    throw new HttpsError('not-found', 'That group check-in no longer exists.');
+  }
+  const place = {
+    id: first.get('placeId'),
+    name: first.get('placeName'),
+    latitude: first.get('latitude'),
+    longitude: first.get('longitude'),
+  };
+  const distance = distanceMeters(device.lat, device.lng, place.latitude, place.longitude);
+  logger.info('joinGroup', { uid, groupId, placeId: place.id, distance: Math.round(distance) });
+  if (distance > CHECK_IN_RANGE_METERS) {
+    throw new HttpsError('failed-precondition',
+      `Too far away - get within ${CHECK_IN_RANGE_METERS}m of ${place.name} to join ` +
+      `(currently ${Math.round(distance)}m away).`);
+  }
+
+  const userRef = db.collection('users').doc(uid);
+  const lastCheckInRef = userRef.collection('placeCheckIns').doc(place.id);
+  const placeRef = db.collection('places').doc(place.id);
+  const businessRef = db.collection('businesses').doc(place.id);
+  const checkInRef = db.collection('checkIns').doc();
+
+  const result = await db.runTransaction(async (tx) => {
+    const [groupDoc, userDoc, lastDoc] = await Promise.all([
+      tx.get(groupRef), tx.get(userRef), tx.get(lastCheckInRef),
+    ]);
+    const group = groupDoc.data();
+    const members = group.members ?? [];
+
+    if (!(group.invited ?? []).includes(uid)) {
+      throw new HttpsError('permission-denied', 'You weren\'t invited to this group check-in.');
+    }
+    if (members.includes(uid)) {
+      throw new HttpsError('already-exists', 'You\'re already in this group.');
+    }
+    if (group.status !== 'open' || members.length >= GROUP_MAX_SIZE) {
+      throw new HttpsError('failed-precondition', 'This group is full.');
+    }
+    if (Date.now() > group.expiresAt.toMillis()) {
+      throw new HttpsError('deadline-exceeded', 'This group check-in has closed.');
+    }
+    if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
+      throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
+    }
+    throwIfCheckedInRecently(lastDoc, place);
+
+    const newMembers = [...members, uid];
+    const size = newMembers.length;
+    const multiplier = GROUP_MULTIPLIERS[size];
+    const myBase = basePoints(userDoc, place, group.rarityCount ?? 0);
+    const base = { ...group.basePoints, [uid]: myBase };
+    const awarded = { ...group.awarded };
+    for (const member of newMembers) {
+      const target = Math.round(base[member] * multiplier);
+      const topUp = target - (awarded[member] ?? 0);
+      if (topUp !== 0) {
+        tx.update(db.collection('users').doc(member), { points: FieldValue.increment(topUp) });
+      }
+      awarded[member] = target;
+    }
+
+    const full = size >= GROUP_MAX_SIZE;
+    tx.update(groupRef, { members: newMembers, basePoints: base, awarded, size, status: full ? 'full' : 'open' });
+
+    const now = FieldValue.serverTimestamp();
+    tx.set(lastCheckInRef, { lastCheckInAt: now });
+    tx.set(checkInRef, {
+      uid, placeId: place.id, placeName: place.name, points: myBase, groupId,
+      distanceMeters: Math.round(distance), createdAt: now,
+    });
+    tx.set(placeRef, { timesCheckedIn: FieldValue.increment(1) }, { merge: true });
+    // For the owner's stats: a group counts once it has two people.
+    tx.set(businessRef, size === 2
+      ? { groupCount: FieldValue.increment(1), groupMembers: FieldValue.increment(2) }
+      : { groupMembers: FieldValue.increment(1) }, { merge: true });
+
+    tx.delete(inviteRef);
+    if (full) {
+      for (const invited of group.invited.filter((f) => !newMembers.includes(f))) {
+        tx.delete(db.doc(`users/${invited}/groupInvites/${groupId}`));
+      }
+    }
+    return { pointsEarned: awarded[uid], groupSize: size, multiplier };
+  });
+
+  logger.info('Joined group', { uid, groupId, ...result });
+  return { ...result, placeName: place.name };
 });
 
 // ---------------------------------------------------------------------------
@@ -407,21 +603,24 @@ exports.performCheckIn = onCall(async (request) => {
 // scripts/business-claims.js, which also creates the place's secret in
 // businessSecrets/{placeId}. Clients can never read that collection.
 //
-// The owner's app shows a 6-digit code (getBusinessCode) that changes every
-// BUSINESS_CODE_PERIOD_SECONDS, derived from the secret like an authenticator
-// app code (RFC 6238), so no codes are stored. Customers give it at check-in.
+// The owner's app shows a 6-digit code (getBusinessCode). Each code works for
+// one customer: once used, the next code in the sequence takes its place.
+// Codes are derived from the secret and a sequence number (RFC 4226 HOTP), so
+// no codes are stored. An unused code expires after
+// BUSINESS_CODE_LIFETIME_MINUTES, and the owner can retire it early
+// (newBusinessCode). businesses/{placeId}.codeSeq changes whenever the code
+// does, so the owner's screen knows to fetch the new one.
 // ---------------------------------------------------------------------------
 
 const crypto = require('crypto');
 
-const BUSINESS_CODE_PERIOD_SECONDS = 10 * 60;
 const BUSINESS_CODE_DIGITS = 6;
+const BUSINESS_CODE_LIFETIME_MINUTES = 10;
+// An expired (not used or retired) code still works this long after expiry,
+// in case it changed while the customer was typing.
+const CODE_GRACE_SECONDS = 60;
 const MAX_CODE_FAILURES = 5; // per user, per place, per lockout window
 const CODE_LOCKOUT_MINUTES = 60;
-
-function codeCounter(ms) {
-  return Math.floor(ms / 1000 / BUSINESS_CODE_PERIOD_SECONDS);
-}
 
 function businessCodeAt(secret, counter) {
   const message = Buffer.alloc(8);
@@ -432,8 +631,11 @@ function businessCodeAt(secret, counter) {
   return String(value % 10 ** BUSINESS_CODE_DIGITS).padStart(BUSINESS_CODE_DIGITS, '0');
 }
 
-async function readBusinessSecret(db, placeId) {
-  const secretDoc = await db.collection('businessSecrets').doc(placeId).get();
+function codesMatch(a, b) {
+  return a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+function readSecret(secretDoc, placeId) {
   const secret = secretDoc.get('secret');
   if (!secret) {
     logger.error('Approved business has no secret', { placeId });
@@ -443,29 +645,63 @@ async function readBusinessSecret(db, placeId) {
 }
 
 /**
- * Throws unless the code is right for this place, when its business has been
- * approved; unclaimed places are location-only. The current and previous code
- * are accepted, in case it changed while the customer was typing. Wrong codes
- * are counted per user and place, and lock that place for CODE_LOCKOUT_MINUTES
- * after MAX_CODE_FAILURES.
+ * Returns the place's current code, starting a new one if it has expired or
+ * [retire] is set. Retiring (the owner's "New code") gives no grace period.
  */
-async function checkBusinessCode(db, uid, place, code) {
-  const businessDoc = await db.collection('businesses').doc(place.id).get();
-  if (!businessDoc.exists || businessDoc.get('status') !== 'approved') return;
+async function currentBusinessCode(db, placeId, { retire = false } = {}) {
+  const secretRef = db.collection('businessSecrets').doc(placeId);
+  const businessRef = db.collection('businesses').doc(placeId);
+  const lifetimeMs = BUSINESS_CODE_LIFETIME_MINUTES * 60 * 1000;
 
+  return db.runTransaction(async (tx) => {
+    const secretDoc = await tx.get(secretRef);
+    const secret = readSecret(secretDoc, placeId);
+    const now = Date.now();
+    let seq = secretDoc.get('seq') ?? 0;
+    let issuedAt = secretDoc.get('issuedAt')?.toMillis() ?? null;
+
+    if (retire || issuedAt === null || now - issuedAt >= lifetimeMs) {
+      const expiredUnused = !retire && issuedAt !== null;
+      seq += 1;
+      issuedAt = now;
+      tx.update(secretRef, {
+        seq,
+        issuedAt: Timestamp.fromMillis(now),
+        graceSeq: expiredUnused ? seq - 1 : null,
+        graceUntil: expiredUnused
+          ? Timestamp.fromMillis(secretDoc.get('issuedAt').toMillis() + lifetimeMs + CODE_GRACE_SECONDS * 1000)
+          : null,
+      });
+      tx.update(businessRef, { codeSeq: seq });
+    }
+    return { code: businessCodeAt(secret, seq), expiresAt: issuedAt + lifetimeMs, seq };
+  });
+}
+
+/**
+ * Throws unless [code] is the place's current code (or an expired one still
+ * in its grace period), and uses it up. Wrong codes are counted per user and
+ * place, and lock that place for CODE_LOCKOUT_MINUTES after
+ * MAX_CODE_FAILURES.
+ */
+async function useBusinessCode(db, uid, place, code) {
   const typed = typeof code === 'string' ? code.replace(/\s/g, '') : '';
   if (!new RegExp(`^\\d{${BUSINESS_CODE_DIGITS}}$`).test(typed)) {
     throw new HttpsError('invalid-argument',
       `Enter the ${BUSINESS_CODE_DIGITS}-digit code from the staff at ${place.name}.`);
   }
 
-  const secret = await readBusinessSecret(db, place.id);
+  const secretRef = db.collection('businessSecrets').doc(place.id);
+  const businessRef = db.collection('businesses').doc(place.id);
   const attemptsRef = db.collection('users').doc(uid).collection('codeAttempts').doc(place.id);
   const lockoutMs = CODE_LOCKOUT_MINUTES * 60 * 1000;
+  const lifetimeMs = BUSINESS_CODE_LIFETIME_MINUTES * 60 * 1000;
 
-  // In a transaction so simultaneous guesses are all counted.
+  // In a transaction so simultaneous guesses are all counted, and two
+  // customers can't both use the same code.
   const result = await db.runTransaction(async (tx) => {
-    const attempts = await tx.get(attemptsRef);
+    const [attempts, secretDoc] = await Promise.all([tx.get(attemptsRef), tx.get(secretRef)]);
+    const secret = readSecret(secretDoc, place.id);
     const now = Date.now();
     const windowStart = attempts.exists ? attempts.get('windowStart')?.toMillis() ?? 0 : 0;
     const inWindow = now - windowStart < lockoutMs;
@@ -475,10 +711,21 @@ async function checkBusinessCode(db, uid, place, code) {
       return { locked: true, minutesLeft: Math.ceil((windowStart + lockoutMs - now) / 60000) };
     }
 
-    const counter = codeCounter(now);
-    const correct = [counter, counter - 1].some((c) =>
-      crypto.timingSafeEqual(Buffer.from(businessCodeAt(secret, c)), Buffer.from(typed)));
-    if (correct) return { correct: true };
+    const seq = secretDoc.get('seq') ?? 0;
+    const issuedAt = secretDoc.get('issuedAt')?.toMillis() ?? null;
+    const graceSeq = secretDoc.get('graceSeq');
+    const graceUntil = secretDoc.get('graceUntil')?.toMillis() ?? 0;
+
+    if (issuedAt !== null && now - issuedAt < lifetimeMs && codesMatch(businessCodeAt(secret, seq), typed)) {
+      // Used: the next code replaces it.
+      tx.update(secretRef, { seq: seq + 1, issuedAt: Timestamp.fromMillis(now), graceSeq: null, graceUntil: null });
+      tx.update(businessRef, { codeSeq: seq + 1 });
+      return { correct: true };
+    }
+    if (typeof graceSeq === 'number' && now < graceUntil && codesMatch(businessCodeAt(secret, graceSeq), typed)) {
+      tx.update(secretRef, { graceSeq: null, graceUntil: null });
+      return { correct: true };
+    }
 
     if (inWindow) {
       tx.update(attemptsRef, { failures: FieldValue.increment(1) });
@@ -496,7 +743,19 @@ async function checkBusinessCode(db, uid, place, code) {
       `Too many wrong codes for ${place.name}. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
   }
   throw new HttpsError('invalid-argument',
-    `That code isn't right. ${result.triesLeft} ${result.triesLeft === 1 ? 'try' : 'tries'} left.`);
+    `That code isn't right or has already been used. ${result.triesLeft} ${result.triesLeft === 1 ? 'try' : 'tries'} left.`);
+}
+
+/** Throws unless the caller manages this approved business; returns its document. */
+async function readOwnBusiness(db, uid, placeId) {
+  const businessDoc = await db.collection('businesses').doc(placeId).get();
+  if (!businessDoc.exists || businessDoc.get('ownerUid') !== uid) {
+    throw new HttpsError('permission-denied', 'You don\'t manage this place.');
+  }
+  if (businessDoc.get('status') !== 'approved') {
+    throw new HttpsError('failed-precondition', 'Your registration hasn\'t been approved yet.');
+  }
+  return businessDoc;
 }
 
 /** Asks to manage a restaurant, café or hotel. Approved by an admin. */
@@ -550,133 +809,189 @@ exports.getBusinessCode = onCall(async (request) => {
     throw new HttpsError('unauthenticated', 'Sign in to see your business code.');
   }
   const placeId = readPlaceId(request.data?.placeId);
-
   const db = getFirestore();
-  const businessDoc = await db.collection('businesses').doc(placeId).get();
-  if (!businessDoc.exists || businessDoc.get('ownerUid') !== uid) {
-    throw new HttpsError('permission-denied', 'You don\'t manage this place.');
-  }
-  if (businessDoc.get('status') !== 'approved') {
-    throw new HttpsError('failed-precondition', 'Your registration hasn\'t been approved yet.');
-  }
+  const businessDoc = await readOwnBusiness(db, uid, placeId);
+  const { code, expiresAt, seq } = await currentBusinessCode(db, placeId);
+  return { code, expiresAt, seq, placeName: businessDoc.get('placeName') };
+});
 
-  const secret = await readBusinessSecret(db, placeId);
-  const counter = codeCounter(Date.now());
+/** Retires the current code at once (e.g. if it was seen by someone else) and returns a new one. */
+exports.newBusinessCode = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage your business.');
+  }
+  const placeId = readPlaceId(request.data?.placeId);
+  const db = getFirestore();
+  const businessDoc = await readOwnBusiness(db, uid, placeId);
+  const { code, expiresAt, seq } = await currentBusinessCode(db, placeId, { retire: true });
+  logger.info('newBusinessCode', { uid, placeId, seq });
+  return { code, expiresAt, seq, placeName: businessDoc.get('placeName') };
+});
+
+/**
+ * Check-in counts for a place the caller manages: since the start of the
+ * owner's day (todayStart, sent by the app since it knows the time zone), the
+ * last 7 days, and since approval, plus group check-ins. Counts only - owners
+ * never see who checked in.
+ */
+exports.getBusinessStats = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to see your business stats.');
+  }
+  const placeId = readPlaceId(request.data?.placeId);
+  const db = getFirestore();
+  const businessDoc = await readOwnBusiness(db, uid, placeId);
+
+  const now = Date.now();
+  const dayMs = 24 * 3600 * 1000;
+  let todayStart = request.data?.todayStart;
+  if (typeof todayStart !== 'number' || todayStart > now || todayStart < now - 2 * dayMs) {
+    todayStart = now - dayMs;
+  }
+  const approvedAt = businessDoc.get('approvedAt')?.toMillis() ?? businessDoc.get('requestedAt')?.toMillis() ?? 0;
+
+  const countSince = async (ms) => (await db.collection('checkIns')
+    .where('placeId', '==', placeId)
+    .where('createdAt', '>=', Timestamp.fromMillis(ms))
+    .count().get()).data().count;
+  const [today, week, sinceApproval] = await Promise.all([
+    countSince(Math.max(todayStart, approvedAt)),
+    countSince(Math.max(now - 7 * dayMs, approvedAt)),
+    countSince(approvedAt),
+  ]);
+
+  const groupCount = businessDoc.get('groupCount') ?? 0;
+  const groupMembers = businessDoc.get('groupMembers') ?? 0;
   return {
-    code: businessCodeAt(secret, counter),
-    expiresAt: (counter + 1) * BUSINESS_CODE_PERIOD_SECONDS * 1000,
-    placeName: businessDoc.get('placeName'),
+    today,
+    week,
+    sinceApproval,
+    groupCheckIns: groupCount,
+    averageGroupSize: groupCount ? Math.round((groupMembers / groupCount) * 10) / 10 : null,
   };
 });
 
 // ---------------------------------------------------------------------------
-// Buddy check-ins
+// Friends
 //
-// Two friends who check in at the same place within BUDDY_WINDOW_MINUTES of
-// each other, and each name the other, both earn BUDDY_BONUS_POINTS.
-//
-// Each request is stored at buddyCheckins/{placeId}_{initiatorUid}_{selectedUid},
-// so the friend's matching request is a single document read inside the
-// transaction (no composite index, and two simultaneous calls can't both pay
-// out or both miss each other).
+// Friendships are mutual: sendFriendRequest creates
+// friendRequests/{fromUid}_{toUid}, and acceptFriendRequest turns it into
+// users/{uid}/friends/{friendUid} on both sides. Only friends can be invited
+// to group check-ins. Either person may delete a request (decline or cancel)
+// directly; everything else is written here.
 // ---------------------------------------------------------------------------
 
-const BUDDY_WINDOW_MINUTES = 5; // keep in sync with the message in MapScreen
-const BUDDY_BONUS_POINTS = 50;
+const MAX_FRIENDS = 200;
 
-function buddyDocId(placeId, initiatorUid, selectedUid) {
-  return `${placeId}_${initiatorUid}_${selectedUid}`;
+async function requireVerifiedUser(tx, userRef, action) {
+  const userDoc = await tx.get(userRef);
+  if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
+    throw new HttpsError('failed-precondition', `Verify your phone number before ${action}.`);
+  }
+  return userDoc;
 }
 
-/**
- * Pairs the caller's check-in at a place with a friend's.
- *
- * The caller must have checked in at the place (via performCheckIn) within the
- * last BUDDY_WINDOW_MINUTES, which is what proves they're actually there. If
- * the friend already named the caller at the same place within the window,
- * both get the bonus; otherwise the caller's request waits for the friend.
- */
-exports.attemptBuddyCheckIn = onCall(async (request) => {
+function makeFriends(tx, db, a, b) {
+  const since = FieldValue.serverTimestamp();
+  tx.set(db.doc(`users/${a}/friends/${b}`), { since });
+  tx.set(db.doc(`users/${b}/friends/${a}`), { since });
+  tx.delete(db.doc(`friendRequests/${a}_${b}`));
+  tx.delete(db.doc(`friendRequests/${b}_${a}`));
+}
+
+/** Sends a friend request by username, or accepts theirs if they already asked. */
+exports.sendFriendRequest = onCall(async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
-    throw new HttpsError('unauthenticated', 'Sign in to check in with a buddy.');
+    throw new HttpsError('unauthenticated', 'Sign in to add friends.');
   }
-  const placeId = request.data?.locationId;
-  if (typeof placeId !== 'string' || !/^[A-Za-z0-9_-]{1,300}$/.test(placeId)) {
-    throw new HttpsError('invalid-argument', 'A valid place is required.');
-  }
-  const rawUsername = request.data?.friendUsername;
-  const friendUsername = typeof rawUsername === 'string'
-    ? rawUsername.trim().replace(/^@/, '').toLowerCase()
-    : '';
-  if (!friendUsername) {
+  const raw = request.data?.username;
+  const username = typeof raw === 'string' ? raw.trim().replace(/^@/, '').toLowerCase() : '';
+  if (!username) {
     throw new HttpsError('invalid-argument', 'Enter your friend\'s username.');
   }
 
   const db = getFirestore();
-  const friends = await db.collection('users').where('username', '==', friendUsername).limit(1).get();
-  if (friends.empty) {
-    throw new HttpsError('not-found', `No user found with the username @${friendUsername}.`);
+  const found = await db.collection('users').where('username', '==', username).limit(1).get();
+  if (found.empty) {
+    throw new HttpsError('not-found', `No user found with the username @${username}.`);
   }
-  const friendUid = friends.docs[0].id;
+  const friendUid = found.docs[0].id;
   if (friendUid === uid) {
-    throw new HttpsError('invalid-argument', 'You can\'t buddy check-in with yourself.');
+    throw new HttpsError('invalid-argument', 'You can\'t add yourself as a friend.');
   }
 
   const userRef = db.collection('users').doc(uid);
-  const friendRef = db.collection('users').doc(friendUid);
-  const lastCheckInRef = userRef.collection('placeCheckIns').doc(placeId);
-  const mineRef = db.collection('buddyCheckins').doc(buddyDocId(placeId, uid, friendUid));
-  const theirsRef = db.collection('buddyCheckins').doc(buddyDocId(placeId, friendUid, uid));
-  const windowMs = BUDDY_WINDOW_MINUTES * 60 * 1000;
-
-  const matched = await db.runTransaction(async (tx) => {
-    const [userDoc, lastDoc, mineDoc, theirsDoc] = await Promise.all([
-      tx.get(userRef), tx.get(lastCheckInRef), tx.get(mineRef), tx.get(theirsRef),
+  const status = await db.runTransaction(async (tx) => {
+    const [friendDoc, theirRequest, friendCount] = await Promise.all([
+      tx.get(db.doc(`users/${uid}/friends/${friendUid}`)),
+      tx.get(db.doc(`friendRequests/${friendUid}_${uid}`)),
+      tx.get(userRef.collection('friends').count()),
     ]);
-    const now = Date.now();
-
-    if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
-      throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
+    const userDoc = await requireVerifiedUser(tx, userRef, 'adding friends');
+    if (friendDoc.exists) {
+      throw new HttpsError('already-exists', `You're already friends with @${username}.`);
     }
-
-    const checkedInAt = lastDoc.exists ? lastDoc.get('lastCheckInAt')?.toMillis() : null;
-    if (!checkedInAt || now - checkedInAt > windowMs) {
-      throw new HttpsError('failed-precondition',
-        `Check in at this place first - buddy check-ins only work within ${BUDDY_WINDOW_MINUTES} minutes of checking in.`);
+    if (friendCount.data().count >= MAX_FRIENDS) {
+      throw new HttpsError('resource-exhausted', `You can have up to ${MAX_FRIENDS} friends.`);
     }
-
-    // A confirmed pairing for this check-in has already paid out.
-    const mineConfirmedAt = mineDoc.exists && mineDoc.get('status') === 'confirmed'
-      ? mineDoc.get('confirmedAt')?.toMillis()
-      : null;
-    if (mineConfirmedAt && mineConfirmedAt >= checkedInAt) {
-      throw new HttpsError('already-exists', 'You\'ve already earned the buddy bonus with this friend here.');
+    if (theirRequest.exists) {
+      makeFriends(tx, db, uid, friendUid);
+      return 'friends';
     }
-
-    const theirsAt = theirsDoc.exists && theirsDoc.get('status') === 'pending'
-      ? theirsDoc.get('createdAt')?.toMillis()
-      : null;
-    const serverNow = FieldValue.serverTimestamp();
-
-    if (theirsAt && now - theirsAt <= windowMs) {
-      const confirmed = { status: 'confirmed', confirmedAt: serverNow };
-      tx.update(theirsRef, confirmed);
-      tx.set(mineRef, {
-        placeId, initiatorId: uid, selectedUserId: friendUid, createdAt: serverNow, ...confirmed,
-      });
-      tx.update(userRef, { points: FieldValue.increment(BUDDY_BONUS_POINTS) });
-      tx.update(friendRef, { points: FieldValue.increment(BUDDY_BONUS_POINTS) });
-      return true;
-    }
-
-    // No match yet: (re)start the caller's request so the friend can match it.
-    tx.set(mineRef, {
-      placeId, initiatorId: uid, selectedUserId: friendUid, status: 'pending', createdAt: serverNow,
+    tx.set(db.doc(`friendRequests/${uid}_${friendUid}`), {
+      from: uid,
+      to: friendUid,
+      fromName: userDoc.get('name') ?? '',
+      fromUsername: userDoc.get('username') ?? '',
+      toName: found.docs[0].get('name') ?? '',
+      toUsername: username,
+      createdAt: FieldValue.serverTimestamp(),
     });
-    return false;
+    return 'requested';
   });
 
-  logger.info('attemptBuddyCheckIn', { uid, friendUid, placeId, matched });
-  return { matched, bonusPoints: matched ? BUDDY_BONUS_POINTS : 0 };
+  logger.info('sendFriendRequest', { uid, friendUid, status });
+  return { status };
+});
+
+/** Accepts a friend request sent to the caller. */
+exports.acceptFriendRequest = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to add friends.');
+  }
+  const fromUid = readUid(request.data?.fromUid);
+  const db = getFirestore();
+  const requestRef = db.doc(`friendRequests/${fromUid}_${uid}`);
+
+  await db.runTransaction(async (tx) => {
+    const requestDoc = await tx.get(requestRef);
+    if (!requestDoc.exists) {
+      throw new HttpsError('not-found', 'That friend request no longer exists.');
+    }
+    await requireVerifiedUser(tx, db.collection('users').doc(uid), 'adding friends');
+    makeFriends(tx, db, uid, fromUid);
+  });
+
+  logger.info('acceptFriendRequest', { uid, fromUid });
+  return { status: 'friends' };
+});
+
+/** Removes a friend, for both people. */
+exports.removeFriend = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage friends.');
+  }
+  const friendUid = readUid(request.data?.friendUid);
+  const db = getFirestore();
+  const batch = db.batch();
+  batch.delete(db.doc(`users/${uid}/friends/${friendUid}`));
+  batch.delete(db.doc(`users/${friendUid}/friends/${uid}`));
+  await batch.commit();
+  logger.info('removeFriend', { uid, friendUid });
+  return { status: 'removed' };
 });

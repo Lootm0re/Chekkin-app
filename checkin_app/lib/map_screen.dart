@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 import 'check_in_place.dart';
+import 'group_check_in.dart';
 import 'location_access.dart';
 
 /// Dev-only location override, for testing check-ins away from a place.
@@ -45,7 +46,10 @@ class _MapScreenState extends State<MapScreen> {
   // Dev tools only: used instead of the real location while set.
   Position? devFakePosition;
 
-  final TextEditingController buddyUsernameController = TextEditingController();
+  // Friends to invite to a group check-in (id -> username); code places only.
+  Map<String, String> groupFriends = {};
+  // A group check-in the user started or joined, shown until dismissed.
+  String? activeGroupId;
   final TextEditingController codeController = TextEditingController();
   final FirebaseFunctions functions = FirebaseFunctions.instance;
 
@@ -67,7 +71,6 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void dispose() {
     mapMessageTimer?.cancel();
-    buddyUsernameController.dispose();
     codeController.dispose();
     super.dispose();
   }
@@ -223,6 +226,7 @@ class _MapScreenState extends State<MapScreen> {
       if (selectedPlace?.id != place.id) {
         codeController.clear();
         checkInError = null;
+        groupFriends = {};
       }
       setState(() => selectedPlace = place);
       _hideMapMessage();
@@ -253,9 +257,9 @@ class _MapScreenState extends State<MapScreen> {
 
     String placeId = place.id;
     String placeName = place.name;
-    String buddyUsername = buddyUsernameController.text.trim().replaceFirst('@', '');
+    List<String> friendUids = place.requiresCode ? groupFriends.keys.toList() : [];
     int? pointsEarned;
-    String? buddyMessage;
+    String? groupId;
 
     try {
       HttpsCallable callable = functions.httpsCallable('performCheckIn');
@@ -264,14 +268,12 @@ class _MapScreenState extends State<MapScreen> {
         'deviceLatitude': currentPosition!.latitude,
         'deviceLongitude': currentPosition!.longitude,
         if (place.requiresCode) 'code': codeController.text.trim(),
+        if (friendUids.isNotEmpty) 'friendUids': friendUids,
       });
 
       pointsEarned = (response.data['pointsEarned'] as num).toInt();
       placeName = response.data['placeName'] ?? placeName;
-
-      if (buddyUsername.isNotEmpty) {
-        buddyMessage = await _attemptBuddyCheckIn(placeId, buddyUsername);
-      }
+      groupId = response.data['groupId'];
     } on FirebaseFunctionsException catch (e) {
       debugPrint('Check-in failed: [${e.code}] ${e.message}');
       checkInError = e.message ?? 'Check-in failed. Please try again.';
@@ -286,47 +288,64 @@ class _MapScreenState extends State<MapScreen> {
           codeController.clear();
           if (pointsEarned != null) {
             selectedPlace = null;
-            buddyUsernameController.clear();
+            groupFriends = {};
+            if (groupId != null) activeGroupId = groupId;
           }
         });
       }
     }
 
     if (pointsEarned != null && mounted) {
-      _showCheckInConfirmation(placeName, pointsEarned, buddyMessage);
+      int invited = friendUids.length;
+      _showCheckInConfirmation(
+        placeName,
+        pointsEarned,
+        note: groupId == null
+            ? null
+            : 'You invited $invited friend${invited == 1 ? '' : 's'}. They have 10 minutes to join from their '
+                'own phones here, and everyone\'s points grow with the group: up to '
+                '${formatMultiplier(groupMultipliers[invited + 1]!)} if they all join.',
+      );
     }
   }
 
-  /// Returns what to tell the user about the buddy check-in. A failure here
-  /// doesn't undo the check-in itself, so it's reported rather than thrown.
-  Future<String> _attemptBuddyCheckIn(String placeId, String friendUsername) async {
+  /// Joins a friend's group check-in from the user's current position.
+  Future<void> _joinGroup(String groupId) async {
     try {
-      final response = await functions.httpsCallable('attemptBuddyCheckIn').call({
-        'locationId': placeId,
-        'friendUsername': friendUsername,
+      Position position = await _readPosition();
+      final response = await functions.httpsCallable('joinGroup').call({
+        'groupId': groupId,
+        'deviceLatitude': position.latitude,
+        'deviceLongitude': position.longitude,
       });
-      if (response.data['matched'] == true) {
-        return 'Buddy bonus! You and @$friendUsername each earned '
-            '+${response.data['bonusPoints']} points.';
-      }
-      return 'Waiting for @$friendUsername to check in here and pick you too '
-          '(within 5 minutes).';
+      if (!mounted) return;
+      int size = response.data['groupSize'];
+      setState(() => activeGroupId = groupId);
+      _showCheckInConfirmation(
+        response.data['placeName'],
+        (response.data['pointsEarned'] as num).toInt(),
+        title: 'Joined the group!',
+        note: 'Group of $size: ${formatMultiplier(response.data['multiplier'])} points for everyone. '
+            'You\'ll get more if others join.',
+      );
+    } on LocationAccessException catch (e) {
+      _showMapMessage(e.message);
     } on FirebaseFunctionsException catch (e) {
-      return e.message ?? 'Buddy check-in failed.';
+      _showMapMessage(e.message ?? 'Couldn\'t join that group.');
     } catch (e) {
-      debugPrint('Buddy check-in failed: $e');
-      return 'Buddy check-in failed.';
+      debugPrint('Joining group failed: $e');
+      _showMapMessage('Couldn\'t join that group. Please check your connection.');
     }
   }
 
   // A dialog rather than a snackbar: the snackbar shows on the home screen's
   // Scaffold at the bottom of the map, where it was easy to miss.
-  void _showCheckInConfirmation(String placeName, int pointsEarned, String? buddyMessage) {
+  void _showCheckInConfirmation(String placeName, int pointsEarned, {String title = 'Checked in!', String? note}) {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
-        title: const Text('Checked in!'),
+        title: Text(title),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -339,9 +358,9 @@ class _MapScreenState extends State<MapScreen> {
                     color: Colors.green[700],
                   ),
             ),
-            if (buddyMessage != null) ...[
+            if (note != null) ...[
               const SizedBox(height: 16),
-              Text(buddyMessage, textAlign: TextAlign.center),
+              Text(note, textAlign: TextAlign.center),
             ],
           ],
         ),
@@ -434,44 +453,49 @@ class _MapScreenState extends State<MapScreen> {
             onLongPress: devTools ? _devTeleport : null,
           ),
 
+          // Legend, messages, group progress and invites, top to bottom.
           Positioned(
             top: devTools ? 44 : 8,
             left: 8,
             right: 8,
-            child: const IgnorePointer(child: Center(child: PlaceCategoryLegend())),
-          ),
-
-          if (mapMessage != null)
-            Positioned(
-              top: devTools ? 84 : 48,
-              left: 12,
-              right: 12,
-              child: Material(
-                color: Colors.grey[900],
-                elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 14),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Text(mapMessage!, style: const TextStyle(color: Colors.white)),
+            child: Column(
+              children: [
+                const IgnorePointer(child: Center(child: PlaceCategoryLegend())),
+                if (mapMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Material(
+                      color: Colors.grey[900],
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 14),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                child: Text(mapMessage!, style: const TextStyle(color: Colors.white)),
+                              ),
+                            ),
+                            if (mapMessageAction != null)
+                              TextButton(onPressed: mapMessageAction, child: Text(mapMessageActionLabel ?? 'OK')),
+                            IconButton(
+                              tooltip: 'Dismiss',
+                              icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                              onPressed: _hideMapMessage,
+                            ),
+                          ],
                         ),
                       ),
-                      if (mapMessageAction != null)
-                        TextButton(onPressed: mapMessageAction, child: Text(mapMessageActionLabel ?? 'OK')),
-                      IconButton(
-                        tooltip: 'Dismiss',
-                        icon: const Icon(Icons.close, color: Colors.white70, size: 20),
-                        onPressed: _hideMapMessage,
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
+                if (activeGroupId != null)
+                  ActiveGroupCard(groupId: activeGroupId!, onDismiss: () => setState(() => activeGroupId = null)),
+                GroupInviteCards(onJoin: _joinGroup),
+              ],
             ),
+          ),
 
           if (devTools)
             Positioned(
@@ -545,21 +569,29 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     const SizedBox(height: 8),
                   ],
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: TextField(
-                      controller: buddyUsernameController,
-                      decoration: const InputDecoration(
-                        hintText: 'Checking in with a friend? Enter their username (optional)',
-                        border: InputBorder.none,
+                  // Group check-ins are only at registered businesses.
+                  if (selectedPlace!.requiresCode) ...[
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 44),
                       ),
+                      icon: const Icon(Icons.group_add),
+                      label: Text(
+                        groupFriends.isEmpty
+                            ? 'Check in with friends (optional)'
+                            : 'With ${groupFriends.values.map((u) => '@$u').join(', ')}',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onPressed: isCheckingIn
+                          ? null
+                          : () async {
+                              var picked = await pickGroupFriends(context, groupFriends);
+                              if (picked != null && mounted) setState(() => groupFriends = picked);
+                            },
                     ),
-                  ),
-                  const SizedBox(height: 8),
+                    const SizedBox(height: 8),
+                  ],
                   // Rebuilds as the code is typed, to enable the button.
                   ValueListenableBuilder<TextEditingValue>(
                     valueListenable: codeController,

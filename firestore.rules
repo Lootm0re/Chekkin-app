@@ -50,7 +50,18 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // placeCheckIns and codeAttempts: written by performCheckIn only.
+      // Friends, written by the friend functions.
+      match /friends/{friendUid} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Invites to friends' group check-ins, written by performCheckIn. The
+      // user may delete one to decline it, or to clear an expired one.
+      match /groupInvites/{groupId} {
+        allow read, delete: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // placeCheckIns and codeAttempts: written by the check-in functions only.
       match /{sub=**} {
         allow read, write: if false;
       }
@@ -70,6 +81,20 @@ service cloud.firestore {
     match /businesses/{placeId} {
       allow read: if request.auth != null && request.auth.uid == resource.data.ownerUid;
       allow write: if false;
+    }
+
+    // Pending friend requests, written by sendFriendRequest. Either person
+    // may delete one: the recipient to decline, the sender to cancel.
+    match /friendRequests/{requestId} {
+      allow read, delete: if request.auth != null
+        && (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to);
+    }
+
+    // Group check-ins, written by performCheckIn and joinGroup. Members and
+    // invited friends can follow a group's progress.
+    match /groups/{groupId} {
+      allow read: if request.auth != null
+        && (request.auth.uid in resource.data.members || request.auth.uid in resource.data.invited);
     }
 
     // businessSecrets, buddyCheckins, checkIns, places, phoneNumbers, and anything else.
