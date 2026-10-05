@@ -89,7 +89,12 @@ function publicProfileOf(userData) {
   return profile;
 }
 
-exports.syncPublicProfile = onDocumentWritten('users/{uid}', async (event) => {
+// The database is in europe-north2, which Cloud Functions doesn't offer, so
+// the trigger runs in the nearest region that does.
+exports.syncPublicProfile = onDocumentWritten({
+  document: 'users/{uid}',
+  region: 'europe-north1',
+}, async (event) => {
   const ref = getFirestore().collection('publicProfiles').doc(event.params.uid);
   const after = event.data?.after;
   if (!after?.exists) {
