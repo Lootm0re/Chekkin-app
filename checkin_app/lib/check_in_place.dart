@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import 'pin_icons.dart';
+
 /// The kinds of place on the map. Restaurants, cafés and hotels need a code
 /// from staff once the business has registered; touristic places only need
 /// you to be there. The server decides each place's category.
@@ -18,7 +20,7 @@ enum PlaceCategory {
   bool get isBusiness => this != touristic;
 
   /// The marker colour, for legends and labels.
-  Color get color => HSVColor.fromAHSV(1, markerHue, 0.85, 0.9).toColor();
+  Color get color => pinColor(markerHue);
 
   static PlaceCategory fromName(String? name) =>
       values.firstWhere((c) => c.name == name, orElse: () => touristic);

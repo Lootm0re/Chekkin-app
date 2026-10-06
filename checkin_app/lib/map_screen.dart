@@ -8,6 +8,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'check_in_place.dart';
 import 'group_check_in.dart';
 import 'location_access.dart';
+import 'pin_icons.dart';
 
 /// Dev-only location override, for testing check-ins away from a place.
 /// Off unless built with `--dart-define=DEV_TOOLS=true`; as a compile-time
@@ -25,6 +26,15 @@ class _MapScreenState extends State<MapScreen> {
   GoogleMapController? mapController;
   Position? currentPosition;
   Set<Marker> markers = {};
+
+  // Pin icons by hue: one per place category, plus the dev pretend location.
+  static const double _devPinHue = BitmapDescriptor.hueAzure;
+  final Future<Map<double, BitmapDescriptor>> _pinIcons = loadPinIcons([
+    for (final category in PlaceCategory.values) category.markerHue,
+    _devPinHue,
+  ]);
+  // _pinIcons once loaded, for building the dev marker.
+  Map<double, BitmapDescriptor> pinIcons = {};
 
   // The place in range that the check-in panel is showing.
   CheckInPlace? selectedPlace;
@@ -65,8 +75,13 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    _pinIcons.then((icons) {
+      if (mounted) setState(() => pinIcons = icons);
+    });
     _getUserLocation();
   }
+
+  BitmapDescriptor _pinIcon(double hue) => pinIcons[hue] ?? BitmapDescriptor.defaultMarkerWithHue(hue);
 
   @override
   void dispose() {
@@ -170,6 +185,7 @@ class _MapScreenState extends State<MapScreen> {
         'latitude': position.latitude,
         'longitude': position.longitude,
       });
+      await _pinIcons;
       if (!mounted) return;
 
       List places = response.data['places'];
@@ -180,7 +196,7 @@ class _MapScreenState extends State<MapScreen> {
           Marker(
             markerId: MarkerId(place.id),
             position: place.position,
-            icon: BitmapDescriptor.defaultMarkerWithHue(place.category.markerHue),
+            icon: _pinIcon(place.category.markerHue),
             infoWindow: InfoWindow(title: place.name, snippet: place.category.label),
             onTap: () => _selectPlace(place),
           ),
@@ -466,7 +482,7 @@ class _MapScreenState extends State<MapScreen> {
                 Marker(
                   markerId: const MarkerId('dev-fake-position'),
                   position: LatLng(devFakePosition!.latitude, devFakePosition!.longitude),
-                  icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+                  icon: _pinIcon(_devPinHue),
                   infoWindow: const InfoWindow(title: 'DEV: Pretend location'),
                 ),
             },
