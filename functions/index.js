@@ -222,17 +222,18 @@ const TOURISTIC_TYPES = [
 const ALLOWED_PLACE_TYPES = [...HOSPITALITY_TYPES, ...SHOP_TYPES, ...TOURISTIC_TYPES];
 const BLOCKED_PLACE_TYPES = ['premise', 'subpremise', 'residential', 'street_address'];
 
-// Touristic places and businesses are searched separately, each getting up to
-// 20 results, so a street of shops can't push the sights off the map.
+// One search for everything, nearest first: it returns at most 20 places, so
+// in busy areas farther ones are left out, but check-ins need you within
+// CHECK_IN_RANGE_METERS, so the place you're at is always there. (Two searches
+// showed more, for twice the cost. Results can't be cached instead: the
+// Places terms only allow caching place IDs and coordinates.)
 // searchNearby rejects types it can't filter by (natural_feature, landmark,
 // place_of_worship, premise, ...); results are still checked against the full
 // lists above.
-const SEARCHES = [
-  [
-    'museum', 'tourist_attraction', 'park', 'zoo', 'art_gallery', 'stadium', 'amusement_park',
-    'historical_landmark', 'church', 'mosque', 'synagogue', 'hindu_temple', 'library',
-  ],
-  ['restaurant', 'cafe', 'coffee_shop', 'lodging', ...SHOP_TYPES],
+const SEARCH_INCLUDED_TYPES = [
+  'museum', 'tourist_attraction', 'park', 'zoo', 'art_gallery', 'stadium', 'amusement_park',
+  'historical_landmark', 'church', 'mosque', 'synagogue', 'hindu_temple', 'library',
+  'restaurant', 'cafe', 'coffee_shop', 'lodging', ...SHOP_TYPES,
 ];
 
 const NEARBY_RADIUS_METERS = 500;
@@ -588,22 +589,19 @@ exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
   }
   const { lat, lng } = readCoordinates(request.data, 'latitude', 'longitude');
 
-  const results = await Promise.all(SEARCHES.map((includedTypes) => placesRequest('places:searchNearby', {
+  const data = await placesRequest('places:searchNearby', {
     method: 'POST',
     fieldMask: PLACE_FIELDS.map((f) => `places.${f}`).join(','),
     body: {
-      includedTypes,
+      includedTypes: SEARCH_INCLUDED_TYPES,
       maxResultCount: 20,
       rankPreference: 'DISTANCE',
       locationRestriction: {
         circle: { center: { latitude: lat, longitude: lng }, radius: NEARBY_RADIUS_METERS },
       },
     },
-  })));
-  const found = new Map();
-  for (const p of results.flatMap((r) => r.places ?? [])) found.set(p.id, p);
-  const places = [...found.values()].map(toPlace).filter((p) => isCheckInEligible(p.types))
-    .sort((a, b) => distanceMeters(lat, lng, a.latitude, a.longitude) - distanceMeters(lat, lng, b.latitude, b.longitude));
+  });
+  const places = (data.places ?? []).map(toPlace).filter((p) => isCheckInEligible(p.types));
 
   // Businesses: partner or not, and what a check-in is worth this month.
   const db = getFirestore();
@@ -624,7 +622,7 @@ exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
     p.points = p.partner ? checkInPoints(tier, budgets.get(p.id)) : TOURISTIC_POINTS;
   }
   logger.info('nearbyPlaces', {
-    uid: request.auth.uid, found: found.size, eligible: places.length, partners: partners.length,
+    uid: request.auth.uid, found: data.places?.length ?? 0, eligible: places.length, partners: partners.length,
     appCheck: appCheckStatus(request),
   });
   return { places };

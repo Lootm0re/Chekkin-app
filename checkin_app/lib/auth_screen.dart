@@ -282,9 +282,8 @@ class _AuthScreenState extends State<AuthScreen> {
               const Padding(
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
-                  'We\'ll use your current location as your home city, '
-                  'which affects how points are calculated. You can change '
-                  'this once a year.',
+                  'We\'ll use your current location as your home city. '
+                  'You can change this once a year.',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
