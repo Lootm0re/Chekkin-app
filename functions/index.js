@@ -1,10 +1,13 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onObjectFinalized } = require('firebase-functions/v2/storage');
 const { isDeepStrictEqual } = require('util');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
+const { getStorage } = require('firebase-admin/storage');
+const crypto = require('crypto');
 
 initializeApp();
 
@@ -79,7 +82,39 @@ exports.confirmPhoneVerified = onCall(async (request) => {
 // function writes. A user who hides their picture gets no photo or avatar
 // there, so others see the default icon. Points stay authoritative on
 // users/{uid}; the copy follows within a few seconds.
+//
+// Profile photos are stored at profile_pictures/{uid}.jpg, which Storage
+// rules only let the owner read. Others load it through a download URL, which
+// works without rules, so only these functions set it: publishProfilePicture
+// puts a fresh one in users/{uid}.profilePictureUrl after each upload, and
+// syncPublicProfile replaces its token when the user hides their picture, so
+// URLs that were shown before stop working.
 // ---------------------------------------------------------------------------
+
+const PROFILE_PICTURE_PATH = /^profile_pictures\/([A-Za-z0-9]{1,128})\.jpg$/;
+
+function profilePicturePath(uid) {
+  return `profile_pictures/${uid}.jpg`;
+}
+
+function downloadUrlPrefix(bucketName, path) {
+  return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(path)}?alt=media&token=`;
+}
+
+/** Gives the file a new download token, so old URLs stop working, and returns the new URL. */
+async function replaceDownloadToken(file) {
+  const token = crypto.randomUUID();
+  await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
+  return downloadUrlPrefix(file.bucket.name, file.name) + token;
+}
+
+exports.publishProfilePicture = onObjectFinalized({ region: 'us-east1' }, async (event) => {
+  const uid = PROFILE_PICTURE_PATH.exec(event.data.name)?.[1];
+  if (!uid) return;
+  const url = await replaceDownloadToken(getStorage().bucket(event.data.bucket).file(event.data.name));
+  await getFirestore().collection('users').doc(uid).update({ profilePictureUrl: url });
+  logger.info('Published profile picture', { uid });
+});
 
 const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points'];
 
@@ -101,7 +136,7 @@ function cleanAvatar(avatar) {
   return Object.keys(clean).length ? clean : undefined;
 }
 
-function publicProfileOf(userData) {
+function publicProfileOf(uid, userData) {
   const profile = {};
   for (const field of PUBLIC_PROFILE_FIELDS) {
     if (userData[field] !== undefined) profile[field] = userData[field];
@@ -111,7 +146,12 @@ function publicProfileOf(userData) {
   if (userData.avatarHidden !== true) {
     const avatar = cleanAvatar(userData.avatar);
     if (avatar) profile.avatar = avatar;
-    if (typeof userData.profilePictureUrl === 'string') profile.profilePictureUrl = userData.profilePictureUrl;
+    // Only a URL for the user's own photo, as publishProfilePicture sets it.
+    const url = userData.profilePictureUrl;
+    if (typeof url === 'string' &&
+        url.startsWith(downloadUrlPrefix(getStorage().bucket().name, profilePicturePath(uid)))) {
+      profile.profilePictureUrl = url;
+    }
     if (['avatar', 'photo'].includes(userData.profileImage)) profile.profileImage = userData.profileImage;
   }
   return profile;
@@ -128,10 +168,26 @@ exports.syncPublicProfile = onDocumentWritten({
     return;
   }
 
+  const uid = event.params.uid;
   const before = event.data.before;
-  const profile = publicProfileOf(after.data());
+
+  // Hiding the picture: retire the photo URL others may have seen. The new
+  // one goes back to users/{uid}, for the owner, which runs this again.
+  const justHidden = after.get('avatarHidden') === true && before?.get('avatarHidden') !== true;
+  // A failure here mustn't stop the public profile from hiding the picture.
+  if (justHidden && typeof after.get('profilePictureUrl') === 'string') {
+    try {
+      const url = await replaceDownloadToken(getStorage().bucket().file(profilePicturePath(uid)));
+      await after.ref.update({ profilePictureUrl: url });
+      logger.info('Replaced hidden profile picture URL', { uid });
+    } catch (err) {
+      logger.error('Replacing hidden profile picture URL failed', { uid, message: err.message });
+    }
+  }
+
+  const profile = publicProfileOf(uid, after.data());
   const unchanged = before?.exists &&
-    isDeepStrictEqual(publicProfileOf(before.data()), profile);
+    isDeepStrictEqual(publicProfileOf(uid, before.data()), profile);
   if (unchanged) return;
 
   // set() without merge, so a field removed from users disappears here too.
@@ -281,8 +337,108 @@ function throwIfCheckedInRecently(lastCheckInDoc, place) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Location checks
+//
+// The device position comes from the client, so it can always be faked;
+// these checks make that harder. The app sends the fix's accuracy, when it was
+// taken and whether the OS flagged it as mocked (Android only; web and iOS
+// always say no). A check-in must also be reachable in time from the user's
+// previous one (users/{uid}.lastCheckIn). Accounts listed in devTesters/{uid}
+// (scripts/dev-testers.js) skip these checks, so DEV_TOOLS builds can check in
+// from a pretend location.
+//
+// App Check is monitor-only for now: calls without a valid token still work,
+// and each one logs appCheck 'verified' or 'missing'. Once real users all show
+// 'verified', set enforceAppCheck to true.
+// ---------------------------------------------------------------------------
+
+const LOCATION_CALLABLE = { enforceAppCheck: false };
+
+const MAX_FIX_ACCURACY_METERS = 50;
+const MAX_FIX_AGE_SECONDS = 120;
+const MAX_CLOCK_AHEAD_SECONDS = 60; // device clocks run a little fast
+
+// Fastest believable travel between check-ins: 300 km/h (cars, trains) for
+// the first 1000 km, then 1000 km/h (planes). Within NEARBY_TRAVEL_KM anything
+// goes, so neighbouring places can be visited back to back.
+const GROUND_KMH = 300;
+const FLIGHT_KMH = 1000;
+const FLIGHT_FROM_KM = 1000;
+const NEARBY_TRAVEL_KM = 1;
+
+function appCheckStatus(request) {
+  return request.app ? 'verified' : 'missing';
+}
+
+function readDeviceFix(data) {
+  const { lat, lng } = readCoordinates(data, 'deviceLatitude', 'deviceLongitude');
+  const accuracy = data?.deviceAccuracy;
+  const timestamp = data?.deviceTimestamp;
+  const isMocked = data?.deviceIsMocked;
+  if (typeof accuracy !== 'number' || !(accuracy >= 0) ||
+      typeof timestamp !== 'number' || !Number.isFinite(timestamp) || typeof isMocked !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'Your location is missing details. Reload the app and try again.');
+  }
+  return { lat, lng, accuracy, timestamp, isMocked };
+}
+
+async function isDevTester(db, uid) {
+  return (await db.collection('devTesters').doc(uid).get()).exists;
+}
+
+function throwIfUntrustedFix(fix) {
+  if (fix.isMocked) {
+    throw new HttpsError('failed-precondition',
+      'Your device says this location is simulated. Turn off any mock location app and try again.');
+  }
+  if (fix.accuracy > MAX_FIX_ACCURACY_METERS) {
+    throw new HttpsError('failed-precondition',
+      `Your location is only accurate to ${Math.round(fix.accuracy)}m, too rough to tell if you're ` +
+      'here. Try again outside or with Wi-Fi turned on.');
+  }
+  const ageSeconds = (Date.now() - fix.timestamp) / 1000;
+  if (ageSeconds < -MAX_CLOCK_AHEAD_SECONDS) {
+    throw new HttpsError('failed-precondition',
+      'Your device\'s clock is wrong. Set it to update automatically and try again.');
+  }
+  if (ageSeconds > MAX_FIX_AGE_SECONDS) {
+    throw new HttpsError('failed-precondition', 'Your location is out of date. Please try again.');
+  }
+}
+
+function minTravelHours(km) {
+  if (km <= FLIGHT_FROM_KM) return km / GROUND_KMH;
+  return FLIGHT_FROM_KM / GROUND_KMH + (km - FLIGHT_FROM_KM) / FLIGHT_KMH;
+}
+
+function throwIfImpossibleTravel(userDoc, place) {
+  const last = userDoc.get('lastCheckIn');
+  if (!last?.at) return;
+  const km = distanceMeters(last.latitude, last.longitude, place.latitude, place.longitude) / 1000;
+  if (km <= NEARBY_TRAVEL_KM) return;
+  const waitMs = last.at.toMillis() + minTravelHours(km) * 3600 * 1000 - Date.now();
+  if (waitMs > 0) {
+    const minutes = Math.ceil(waitMs / 60000);
+    const wait = minutes < 60 ? `${minutes} min` : `${Math.ceil(minutes / 60)} h`;
+    throw new HttpsError('failed-precondition',
+      `You checked in at ${last.placeName}, ${Math.round(km)} km away, too recently to be here ` +
+      `already. Try again in ${wait}.`);
+  }
+}
+
+/** Where and when the user last checked in, for throwIfImpossibleTravel. */
+function lastCheckInOf(place) {
+  return {
+    placeName: place.name,
+    latitude: place.latitude,
+    longitude: place.longitude,
+    at: FieldValue.serverTimestamp(),
+  };
+}
+
 /** Returns check-in eligible places near the given position. */
-exports.nearbyPlaces = onCall(async (request) => {
+exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Sign in to see places.');
   }
@@ -310,7 +466,10 @@ exports.nearbyPlaces = onCall(async (request) => {
     p.requiresCode = BUSINESS_CATEGORIES.includes(p.category) &&
       businessDocs[i].exists && businessDocs[i].get('status') === 'approved';
   });
-  logger.info('nearbyPlaces', { uid: request.auth.uid, found: data.places?.length ?? 0, eligible: places.length });
+  logger.info('nearbyPlaces', {
+    uid: request.auth.uid, found: data.places?.length ?? 0, eligible: places.length,
+    appCheck: appCheckStatus(request),
+  });
   return { places };
 });
 
@@ -365,13 +524,16 @@ async function readGroupFriends(db, uid, value) {
  * business's current code, which then can't be used again, and may invite
  * friends (friendUids) to join as a group.
  */
-exports.performCheckIn = onCall(async (request) => {
+exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to check in.');
   }
   const placeId = readPlaceId(request.data?.placeId);
-  const device = readCoordinates(request.data, 'deviceLatitude', 'deviceLongitude');
+  const device = readDeviceFix(request.data);
+  const db = getFirestore();
+  const devTester = await isDevTester(db, uid);
+  if (!devTester) throwIfUntrustedFix(device);
 
   const place = toPlace(await placesRequest(`places/${placeId}`, {
     fieldMask: PLACE_FIELDS.join(','),
@@ -381,13 +543,15 @@ exports.performCheckIn = onCall(async (request) => {
   }
 
   const distance = distanceMeters(device.lat, device.lng, place.latitude, place.longitude);
-  logger.info('performCheckIn', { uid, placeId, place: place.name, distance: Math.round(distance) });
+  logger.info('performCheckIn', {
+    uid, placeId, place: place.name, distance: Math.round(distance), accuracy: Math.round(device.accuracy),
+    isMocked: device.isMocked, devTester, appCheck: appCheckStatus(request),
+  });
   if (distance > CHECK_IN_RANGE_METERS) {
     throw new HttpsError('failed-precondition',
       `Too far away - get within ${CHECK_IN_RANGE_METERS}m to check in (currently ${Math.round(distance)}m away).`);
   }
 
-  const db = getFirestore();
   const userRef = db.collection('users').doc(uid);
   const placeRef = db.collection('places').doc(placeId);
   const lastCheckInRef = db.collection('users').doc(uid).collection('placeCheckIns').doc(placeId);
@@ -401,10 +565,11 @@ exports.performCheckIn = onCall(async (request) => {
       'Group check-ins are only available at registered restaurants, cafés and hotels.');
   }
 
+  // Checked first so a code can't be used up, or count as a wrong guess,
+  // when the check-in would be refused anyway. The transaction below checks
+  // again.
+  if (!devTester) throwIfImpossibleTravel(await userRef.get(), place);
   if (requiresCode) {
-    // Checked first so a code can't be used up, or count as a wrong guess,
-    // when the check-in would be refused anyway. The transaction below
-    // checks again.
     throwIfCheckedInRecently(await lastCheckInRef.get(), place);
     await useBusinessCode(db, uid, place, request.data?.code);
   }
@@ -421,6 +586,7 @@ exports.performCheckIn = onCall(async (request) => {
     }
 
     throwIfCheckedInRecently(lastDoc, place);
+    if (!devTester) throwIfImpossibleTravel(userDoc, place);
 
     const timesCheckedIn = placeDoc.exists ? (placeDoc.get('timesCheckedIn') ?? 0) : 0;
     const points = basePoints(userDoc, place, timesCheckedIn);
@@ -439,7 +605,7 @@ exports.performCheckIn = onCall(async (request) => {
       uid, placeId, placeName: place.name, points, distanceMeters: Math.round(distance), createdAt: now,
       ...(groupRef ? { groupId: groupRef.id } : {}),
     });
-    tx.update(userRef, { points: FieldValue.increment(points) });
+    tx.update(userRef, { points: FieldValue.increment(points), lastCheckIn: lastCheckInOf(place) });
 
     if (groupRef) {
       const expiresAt = Timestamp.fromMillis(Date.now() + GROUP_WINDOW_MINUTES * 60 * 1000);
@@ -490,7 +656,7 @@ exports.performCheckIn = onCall(async (request) => {
  * joining counts as their check-in. Everyone in the group, including the
  * caller, is brought up to their base points times the new size's multiplier.
  */
-exports.joinGroup = onCall(async (request) => {
+exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to join a group check-in.');
@@ -499,9 +665,11 @@ exports.joinGroup = onCall(async (request) => {
   if (typeof groupId !== 'string' || !/^[A-Za-z0-9]{1,64}$/.test(groupId)) {
     throw new HttpsError('invalid-argument', 'A valid group is required.');
   }
-  const device = readCoordinates(request.data, 'deviceLatitude', 'deviceLongitude');
+  const device = readDeviceFix(request.data);
 
   const db = getFirestore();
+  const devTester = await isDevTester(db, uid);
+  if (!devTester) throwIfUntrustedFix(device);
   const groupRef = db.collection('groups').doc(groupId);
   const inviteRef = db.doc(`users/${uid}/groupInvites/${groupId}`);
   const first = await groupRef.get();
@@ -515,7 +683,10 @@ exports.joinGroup = onCall(async (request) => {
     longitude: first.get('longitude'),
   };
   const distance = distanceMeters(device.lat, device.lng, place.latitude, place.longitude);
-  logger.info('joinGroup', { uid, groupId, placeId: place.id, distance: Math.round(distance) });
+  logger.info('joinGroup', {
+    uid, groupId, placeId: place.id, distance: Math.round(distance), accuracy: Math.round(device.accuracy),
+    isMocked: device.isMocked, devTester, appCheck: appCheckStatus(request),
+  });
   if (distance > CHECK_IN_RANGE_METERS) {
     throw new HttpsError('failed-precondition',
       `Too far away - get within ${CHECK_IN_RANGE_METERS}m of ${place.name} to join ` +
@@ -551,6 +722,7 @@ exports.joinGroup = onCall(async (request) => {
       throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
     }
     throwIfCheckedInRecently(lastDoc, place);
+    if (!devTester) throwIfImpossibleTravel(userDoc, place);
 
     const newMembers = [...members, uid];
     const size = newMembers.length;
@@ -572,6 +744,7 @@ exports.joinGroup = onCall(async (request) => {
 
     const now = FieldValue.serverTimestamp();
     tx.set(lastCheckInRef, { lastCheckInAt: now });
+    tx.update(userRef, { lastCheckIn: lastCheckInOf(place) });
     tx.set(checkInRef, {
       uid, placeId: place.id, placeName: place.name, points: myBase, groupId,
       distanceMeters: Math.round(distance), createdAt: now,
@@ -611,8 +784,6 @@ exports.joinGroup = onCall(async (request) => {
 // (newBusinessCode). businesses/{placeId}.codeSeq changes whenever the code
 // does, so the owner's screen knows to fetch the new one.
 // ---------------------------------------------------------------------------
-
-const crypto = require('crypto');
 
 const BUSINESS_CODE_DIGITS = 6;
 const BUSINESS_CODE_LIFETIME_MINUTES = 10;

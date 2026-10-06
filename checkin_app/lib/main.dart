@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
 import 'auth_screen.dart';
 import 'map_screen.dart';
@@ -17,7 +18,23 @@ import 'user_avatar.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await _activateAppCheck();
   runApp(const CheckInApp());
+}
+
+/// reCAPTCHA Enterprise key for App Check on web. Site keys are public; this
+/// one only works on the app's own domains and localhost.
+const String _recaptchaSiteKey = '6LePf-ItAAAAAAlz3lEzaUxuLdg9q5hJ4JFR7PQq';
+
+/// Attaches App Check tokens to Firebase requests, so the server can tell
+/// they come from this app. It isn't enforced yet, so if it fails the app
+/// carries on without it.
+Future<void> _activateAppCheck() async {
+  try {
+    await FirebaseAppCheck.instance.activate(webProvider: ReCaptchaEnterpriseProvider(_recaptchaSiteKey));
+  } catch (e) {
+    debugPrint('App Check activation failed: $e');
+  }
 }
 
 class CheckInApp extends StatelessWidget {

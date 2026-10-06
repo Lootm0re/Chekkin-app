@@ -6,14 +6,17 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class ProfilePictureUploader {
   final ImagePicker picker = ImagePicker();
 
-  Future<String?> pickAndUploadPhoto() async {
+  /// Uploads the photo and shows it instead of the avatar. Its URL appears in
+  /// users/{uid}.profilePictureUrl a few seconds later, set by the
+  /// publishProfilePicture function.
+  Future<void> pickAndUploadPhoto() async {
     XFile? picked = await picker.pickImage(
       source: ImageSource.gallery,
       maxWidth: 512,
       imageQuality: 80,
     );
 
-    if (picked == null) return null;
+    if (picked == null) return;
 
     String uid = FirebaseAuth.instance.currentUser!.uid;
     Reference storageRef = FirebaseStorage.instance.ref().child('profile_pictures/$uid.jpg');
@@ -23,13 +26,9 @@ class ProfilePictureUploader {
       await picked.readAsBytes(),
       SettableMetadata(contentType: picked.mimeType ?? 'image/jpeg'),
     );
-    String downloadUrl = await storageRef.getDownloadURL();
 
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
-      'profilePictureUrl': downloadUrl,
       'profileImage': 'photo',
     });
-
-    return downloadUrl;
   }
 }

@@ -102,7 +102,21 @@ class _MapScreenState extends State<MapScreen> {
     return devFakePosition ?? await getPositionWithPermission();
   }
 
+  /// [position] as performCheckIn and joinGroup expect it. The server rejects
+  /// fixes that are mocked, too rough or too old.
+  Map<String, Object> _deviceFix(Position position) {
+    return {
+      'deviceLatitude': position.latitude,
+      'deviceLongitude': position.longitude,
+      'deviceAccuracy': position.accuracy,
+      'deviceTimestamp': position.timestamp.millisecondsSinceEpoch,
+      'deviceIsMocked': position.isMocked,
+    };
+  }
+
   /// Dev tools only: pretend to be at [target] until the override is cleared.
+  /// The server only accepts this mocked position from accounts listed with
+  /// functions/scripts/dev-testers.js.
   void _devTeleport(LatLng target) {
     setState(() {
       devFakePosition = Position(
@@ -261,12 +275,20 @@ class _MapScreenState extends State<MapScreen> {
     int? pointsEarned;
     String? groupId;
 
+    // The position from when the place was picked may be minutes old, and the
+    // server only accepts a recent one.
+    Position position = currentPosition!;
+    try {
+      position = await _readPosition();
+    } catch (e) {
+      debugPrint('Refreshing location failed: $e');
+    }
+
     try {
       HttpsCallable callable = functions.httpsCallable('performCheckIn');
       final response = await callable.call({
         'placeId': placeId,
-        'deviceLatitude': currentPosition!.latitude,
-        'deviceLongitude': currentPosition!.longitude,
+        ..._deviceFix(position),
         if (place.requiresCode) 'code': codeController.text.trim(),
         if (friendUids.isNotEmpty) 'friendUids': friendUids,
       });
@@ -315,8 +337,7 @@ class _MapScreenState extends State<MapScreen> {
       Position position = await _readPosition();
       final response = await functions.httpsCallable('joinGroup').call({
         'groupId': groupId,
-        'deviceLatitude': position.latitude,
-        'deviceLongitude': position.longitude,
+        ..._deviceFix(position),
       });
       if (!mounted) return;
       int size = response.data['groupSize'];
