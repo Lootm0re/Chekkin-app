@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'friends_screen.dart';
 import 'user_avatar.dart';
 
-/// Group check-ins: at a registered business, the customer who uses the code
+/// Group check-ins: at a partner business, the customer who uses the code
 /// can invite friends, who join from their own phones within 10 minutes.
 
 const int groupMaxSize = 6; // keep in sync with GROUP_MAX_SIZE

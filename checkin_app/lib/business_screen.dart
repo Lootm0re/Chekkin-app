@@ -8,8 +8,8 @@ import 'package:flutter/material.dart';
 import 'check_in_place.dart';
 import 'location_access.dart';
 
-/// For restaurant, café and hotel owners: register a place, and once it's
-/// approved, show customers the current check-in code.
+/// For restaurant, café, hotel and shop owners: register a place, and once
+/// it's a partner, show customers the current check-in code.
 class BusinessScreen extends StatelessWidget {
   const BusinessScreen({super.key});
 
@@ -38,7 +38,7 @@ class BusinessScreen extends StatelessWidget {
                 const Padding(
                   padding: EdgeInsets.only(bottom: 16),
                   child: Text(
-                    'Run a restaurant, café or hotel? Register it, and once it\'s approved, customers '
+                    'Run a restaurant, café, hotel or shop? Register it, and once it\'s a partner, customers '
                     'enter the code shown here when they check in. Each code works for one customer, who can bring '
                     'friends along as a group.',
                   ),
@@ -90,15 +90,22 @@ class _BusinessCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             switch (status) {
-              'approved' => Column(
+              'approved' when tierLabels.containsKey(data['tier']) => Column(
                   children: [
                     _BusinessCode(placeId: placeId, codeSeq: data['codeSeq']),
                     const Divider(height: 32),
                     _BusinessStats(placeId: placeId, codeSeq: data['codeSeq']),
                   ],
                 ),
+              'approved' => Column(
+                  children: [
+                    const Text('Approved, but not a partner yet. Customers can\'t check in here until you are.'),
+                    const Divider(height: 32),
+                    _BusinessStats(placeId: placeId, codeSeq: data['codeSeq']),
+                  ],
+                ),
               'rejected' => const Text('This registration wasn\'t approved.'),
-              _ => const Text('Waiting for approval. Check-ins here stay location-only until then.'),
+              _ => const Text('Waiting for approval.'),
             },
           ],
         ),
@@ -328,16 +335,35 @@ class _BusinessStatsState extends State<_BusinessStats> {
           : const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator());
     } else {
       num? average = stats!['averageGroupSize'];
-      body = Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        alignment: WrapAlignment.center,
+      String? tier = stats!['tierLabel'];
+      num? budget = stats!['monthlyBudget'];
+      int used = (stats!['usedThisMonth'] as num).toInt();
+      String budgetText = budget == null
+          ? '$used check-ins this month (unlimited).'
+          : '$used of $budget full-point check-ins used this month; after that, customers earn 5 points '
+              'until next month.';
+      body = Column(
         children: [
-          _Stat(label: 'Today', value: '${stats!['today']}'),
-          _Stat(label: 'Last 7 days', value: '${stats!['week']}'),
-          _Stat(label: 'Since approval', value: '${stats!['sinceApproval']}'),
-          _Stat(label: 'Group check-ins', value: '${stats!['groupCheckIns']}'),
-          _Stat(label: 'Avg. group size', value: average == null ? '–' : '$average'),
+          if (tier != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                '$tier partner: ${stats!['tierPoints']} points a check-in. $budgetText',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              _Stat(label: 'Today', value: '${stats!['today']}'),
+              _Stat(label: 'Last 7 days', value: '${stats!['week']}'),
+              _Stat(label: 'Since approval', value: '${stats!['sinceApproval']}'),
+              _Stat(label: 'Group check-ins', value: '${stats!['groupCheckIns']}'),
+              _Stat(label: 'Avg. group size', value: average == null ? '–' : '$average'),
+            ],
+          ),
         ],
       );
     }
@@ -386,7 +412,7 @@ class _Stat extends StatelessWidget {
   }
 }
 
-/// Lists restaurants, cafés and hotels near you to register.
+/// Lists restaurants, cafés, hotels and shops near you to register.
 class _RegisterBusinessScreen extends StatefulWidget {
   const _RegisterBusinessScreen();
 
@@ -437,8 +463,8 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
       builder: (context) => AlertDialog(
         title: Text('Register ${place.name}?'),
         content: const Text(
-          'Only register a place you own or manage. We\'ll review it, and once approved, customers will need '
-          'your code to check in there.',
+          'Only register a place you own or manage. We\'ll review it, and once it\'s a partner, customers will '
+          'need your code to check in there.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
@@ -490,7 +516,7 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'No restaurants, cafés or hotels found near you. Open this screen at your business.',
+            'No restaurants, cafés, hotels or shops found near you. Open this screen at your business.',
             textAlign: TextAlign.center,
           ),
         ),
@@ -500,7 +526,7 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
         children: [
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text('Restaurants, cafés and hotels near you:'),
+            child: Text('Restaurants, cafés, hotels and shops near you:'),
           ),
           for (var place in places!)
             ListTile(

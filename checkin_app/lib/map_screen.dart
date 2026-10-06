@@ -27,10 +27,12 @@ class _MapScreenState extends State<MapScreen> {
   Position? currentPosition;
   Set<Marker> markers = {};
 
-  // Pin icons by hue: one per place category, plus the dev pretend location.
+  // Pin icons by hue: one per place category, grey for businesses that
+  // aren't partners yet, and the dev pretend location.
   static const double _devPinHue = BitmapDescriptor.hueAzure;
   final Future<Map<double, BitmapDescriptor>> _pinIcons = loadPinIcons([
     for (final category in PlaceCategory.values) category.markerHue,
+    greyPinHue,
     _devPinHue,
   ]);
   // _pinIcons once loaded, for building the dev marker.
@@ -196,8 +198,8 @@ class _MapScreenState extends State<MapScreen> {
           Marker(
             markerId: MarkerId(place.id),
             position: place.position,
-            icon: _pinIcon(place.category.markerHue),
-            infoWindow: InfoWindow(title: place.name, snippet: place.category.label),
+            icon: _pinIcon(place.pinHue),
+            infoWindow: InfoWindow(title: place.name, snippet: place.summary),
             onTap: () => _selectPlace(place),
           ),
         );
@@ -235,6 +237,12 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _selectPlace(CheckInPlace place) async {
+    if (place.closed) {
+      setState(() => selectedPlace = null);
+      _showMapMessage('${place.name} isn\'t a partner yet, so you can\'t check in here.');
+      return;
+    }
+
     // You may have walked here since the map opened, so measure from where
     // you are now.
     try {
@@ -290,6 +298,7 @@ class _MapScreenState extends State<MapScreen> {
     List<String> friendUids = place.requiresCode ? groupFriends.keys.toList() : [];
     int? pointsEarned;
     String? groupId;
+    String? pointsNote;
 
     // The position from when the place was picked may be minutes old, and the
     // server only accepts a recent one.
@@ -312,6 +321,7 @@ class _MapScreenState extends State<MapScreen> {
       pointsEarned = (response.data['pointsEarned'] as num).toInt();
       placeName = response.data['placeName'] ?? placeName;
       groupId = response.data['groupId'];
+      pointsNote = _pointsNote(response.data);
     } on FirebaseFunctionsException catch (e) {
       debugPrint('Check-in failed: [${e.code}] ${e.message}');
       checkInError = e.message ?? 'Check-in failed. Please try again.';
@@ -335,16 +345,29 @@ class _MapScreenState extends State<MapScreen> {
 
     if (pointsEarned != null && mounted) {
       int invited = friendUids.length;
+      String? groupNote = groupId == null
+          ? null
+          : 'You invited $invited friend${invited == 1 ? '' : 's'}. They have 10 minutes to join from their '
+              'own phones here, and everyone\'s points grow with the group: up to '
+              '${formatMultiplier(groupMultipliers[invited + 1]!)} if they all join.';
       _showCheckInConfirmation(
         placeName,
         pointsEarned,
-        note: groupId == null
-            ? null
-            : 'You invited $invited friend${invited == 1 ? '' : 's'}. They have 10 minutes to join from their '
-                'own phones here, and everyone\'s points grow with the group: up to '
-                '${formatMultiplier(groupMultipliers[invited + 1]!)} if they all join.',
+        note: pointsNote == null || groupNote == null ? pointsNote ?? groupNote : '$pointsNote\n\n$groupNote',
       );
     }
+  }
+
+  /// Why a check-in earned less than usual, if it did.
+  String? _pointsNote(Map data) {
+    if (data['capped'] == true) {
+      return 'You\'ve reached today\'s limit of ${data['dailyPartnerPointsCap']} points from partner '
+          'check-ins, so this one earned less. The limit resets at midnight.';
+    }
+    if (data['budgetUsedUp'] == true) {
+      return 'This partner\'s monthly bonus is used up, so check-ins here earn the touristic rate until next month.';
+    }
+    return null;
   }
 
   /// Joins a friend's group check-in from the user's current position.
@@ -358,11 +381,13 @@ class _MapScreenState extends State<MapScreen> {
       if (!mounted) return;
       int size = response.data['groupSize'];
       setState(() => activeGroupId = groupId);
+      String? pointsNote = _pointsNote(response.data);
       _showCheckInConfirmation(
         response.data['placeName'],
         (response.data['pointsEarned'] as num).toInt(),
         title: 'Joined the group!',
-        note: 'Group of $size: ${formatMultiplier(response.data['multiplier'])} points for everyone. '
+        note: '${pointsNote == null ? '' : '$pointsNote\n\n'}'
+            'Group of $size: ${formatMultiplier(response.data['multiplier'])} points for everyone. '
             'You\'ll get more if others join.',
       );
     } on LocationAccessException catch (e) {
@@ -584,6 +609,17 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     const SizedBox(height: 8),
                   ],
+                  // Tier and what the check-in is worth.
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 3)],
+                    ),
+                    child: Text(selectedPlace!.summary, style: const TextStyle(fontSize: 13)),
+                  ),
+                  const SizedBox(height: 8),
                   if (selectedPlace!.requiresCode) ...[
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -606,7 +642,7 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     const SizedBox(height: 8),
                   ],
-                  // Group check-ins are only at registered businesses.
+                  // Group check-ins are only at partner businesses.
                   if (selectedPlace!.requiresCode) ...[
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(

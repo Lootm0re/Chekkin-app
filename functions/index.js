@@ -1,6 +1,7 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { isDeepStrictEqual } = require('util');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
@@ -207,26 +208,38 @@ const { GoogleAuth } = require('google-auth-library');
 
 const googleAuth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
-const ALLOWED_PLACE_TYPES = [
-  'restaurant', 'cafe', 'coffee_shop', 'lodging', 'hotel', 'museum', 'shopping_mall',
-  'tourist_attraction', 'park', 'natural_feature', 'zoo', 'art_gallery', 'stadium',
+const HOSPITALITY_TYPES = ['restaurant', 'cafe', 'coffee_shop', 'lodging', 'hotel'];
+const SHOP_TYPES = [
+  'store', 'shopping_mall', 'department_store', 'supermarket', 'clothing_store', 'shoe_store',
+  'book_store', 'electronics_store', 'jewelry_store', 'gift_shop', 'furniture_store',
+  'home_goods_store', 'sporting_goods_store', 'florist',
+];
+const TOURISTIC_TYPES = [
+  'museum', 'tourist_attraction', 'park', 'natural_feature', 'zoo', 'art_gallery', 'stadium',
   'amusement_park', 'landmark', 'historical_landmark', 'place_of_worship', 'church',
   'mosque', 'synagogue', 'hindu_temple', 'library',
 ];
+const ALLOWED_PLACE_TYPES = [...HOSPITALITY_TYPES, ...SHOP_TYPES, ...TOURISTIC_TYPES];
 const BLOCKED_PLACE_TYPES = ['premise', 'subpremise', 'residential', 'street_address'];
 
+// Touristic places and businesses are searched separately, each getting up to
+// 20 results, so a street of shops can't push the sights off the map.
 // searchNearby rejects types it can't filter by (natural_feature, landmark,
 // place_of_worship, premise, ...); results are still checked against the full
 // lists above.
-const SEARCH_INCLUDED_TYPES = [
-  'restaurant', 'cafe', 'coffee_shop', 'lodging', 'museum', 'shopping_mall',
-  'tourist_attraction', 'park', 'zoo', 'art_gallery', 'stadium', 'amusement_park',
-  'historical_landmark', 'church', 'mosque', 'synagogue', 'hindu_temple', 'library',
+const SEARCHES = [
+  [
+    'museum', 'tourist_attraction', 'park', 'zoo', 'art_gallery', 'stadium', 'amusement_park',
+    'historical_landmark', 'church', 'mosque', 'synagogue', 'hindu_temple', 'library',
+  ],
+  ['restaurant', 'cafe', 'coffee_shop', 'lodging', ...SHOP_TYPES],
 ];
 
 const NEARBY_RADIUS_METERS = 500;
 const CHECK_IN_RANGE_METERS = 22; // keep in sync with MapScreen.checkInRangeMeters
 const CHECK_IN_COOLDOWN_HOURS = 24; // per user, per place
+const MAX_CHECK_INS_PER_PLACE_PER_WEEK = 2; // per user, rolling 7 days
+const WEEK_MS = 7 * 24 * 3600 * 1000;
 
 async function placesRequest(path, { method = 'GET', fieldMask, body }) {
   const client = await googleAuth.getClient();
@@ -256,23 +269,32 @@ function isCheckInEligible(types) {
   return types.some((t) => ALLOWED_PLACE_TYPES.includes(t));
 }
 
-// Restaurants, cafés and hotels ('business' categories) can require a code
-// from staff once the business has claimed its place; everything else
+// Restaurants, cafés, hotels and shops ('business' categories) can only be
+// checked in to once they're partners (see Partners below); everything else
 // ('touristic') is location-only. The primary type decides first, so a hotel
-// with a restaurant counts as a hotel.
-const BUSINESS_CATEGORIES = ['restaurant', 'cafe', 'hotel'];
+// with a restaurant counts as a hotel, and a museum with a café as touristic.
+const BUSINESS_CATEGORIES = ['restaurant', 'cafe', 'hotel', 'shop'];
 
 function categoryOfType(type) {
   if (type === 'lodging' || type === 'hotel' || type.endsWith('_hotel')) return 'hotel';
   if (type === 'cafe' || type === 'coffee_shop') return 'cafe';
   if (type === 'restaurant' || type.endsWith('_restaurant')) return 'restaurant';
+  if (SHOP_TYPES.includes(type) || type.endsWith('_store')) return 'shop';
   return null;
 }
 
 function placeCategory(primaryType, types) {
-  return (primaryType && categoryOfType(primaryType)) ??
-    ['hotel', 'cafe', 'restaurant'].find((c) => types.some((t) => categoryOfType(t) === c)) ??
-    'touristic';
+  if (primaryType) {
+    const category = categoryOfType(primaryType);
+    if (category) return category;
+    if (TOURISTIC_TYPES.includes(primaryType)) return 'touristic';
+  }
+  const hospitality = ['hotel', 'cafe', 'restaurant'].find((c) => types.some((t) => categoryOfType(t) === c));
+  if (hospitality) return hospitality;
+  // Attractions are often also tagged 'store' for their gift shop.
+  const isAttraction = types.some((t) => TOURISTIC_TYPES.includes(t));
+  if (!isAttraction && types.some((t) => categoryOfType(t) === 'shop')) return 'shop';
+  return 'touristic';
 }
 
 const PLACE_FIELDS = ['id', 'displayName', 'location', 'types', 'primaryType'];
@@ -305,20 +327,6 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
   return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Same formula as checkin_app/lib/checkin_points_with_distance.dart: rarer
-// places are worth more, multiplied up by how far they are from home.
-function rarityPoints(timesCheckedIn) {
-  const basePoints = 10;
-  if (timesCheckedIn === 0) return basePoints * 100;
-  if (timesCheckedIn < 10) return basePoints * 20;
-  if (timesCheckedIn < 100) return basePoints * 5;
-  return basePoints;
-}
-
-function distanceMultiplier(distanceKm) {
-  return Math.min(1.0 + (distanceKm / 500) * 0.10, 3.0);
-}
-
 function readCoordinates(data, latKey, lngKey) {
   const lat = data?.[latKey];
   const lng = data?.[lngKey];
@@ -329,12 +337,37 @@ function readCoordinates(data, latKey, lngKey) {
   return { lat, lng };
 }
 
-function throwIfCheckedInRecently(lastCheckInDoc, place) {
-  const lastAt = lastCheckInDoc.exists ? lastCheckInDoc.get('lastCheckInAt')?.toMillis() : null;
+/**
+ * The user's check-ins at a place in the last 7 days, in ms, oldest first.
+ * users/{uid}/placeCheckIns/{placeId}.recent keeps the latest
+ * MAX_CHECK_INS_PER_PLACE_PER_WEEK; documents from before it only have
+ * lastCheckInAt.
+ */
+function recentCheckIns(lastCheckInDoc) {
+  if (!lastCheckInDoc.exists) return [];
+  const recent = lastCheckInDoc.get('recent') ?? [lastCheckInDoc.get('lastCheckInAt')];
+  return recent.filter(Boolean).map((t) => t.toMillis())
+    .filter((ms) => Date.now() - ms < WEEK_MS).sort((a, b) => a - b);
+}
+
+function throwIfCheckInLimitReached(lastCheckInDoc, place) {
+  const recent = recentCheckIns(lastCheckInDoc);
+  const lastAt = recent[recent.length - 1];
   if (lastAt && Date.now() - lastAt < CHECK_IN_COOLDOWN_HOURS * 3600 * 1000) {
     throw new HttpsError('already-exists',
       `You've already checked in at ${place.name} today. Try again tomorrow.`);
   }
+  if (recent.length >= MAX_CHECK_INS_PER_PLACE_PER_WEEK) {
+    throw new HttpsError('already-exists',
+      `You've already checked in at ${place.name} ${MAX_CHECK_INS_PER_PLACE_PER_WEEK} times this week. ` +
+      `Try again ${formatDay(recent[0] + WEEK_MS)}.`);
+  }
+}
+
+/** The new placeCheckIns fields for a check-in now. Set with merge. */
+function placeCheckInUpdate(lastCheckInDoc) {
+  const recent = [...recentCheckIns(lastCheckInDoc), Date.now()].slice(-MAX_CHECK_INS_PER_PLACE_PER_WEEK);
+  return { lastCheckInAt: FieldValue.serverTimestamp(), recent: recent.map((ms) => Timestamp.fromMillis(ms)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +470,117 @@ function lastCheckInOf(place) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Partners
+//
+// A restaurant, café, hotel or shop is a partner once its claim is approved
+// (scripts/business-claims.js) and it has a tier in businesses/{placeId}.tier
+// (scripts/partner-tiers.js). Only partners can be checked in to, with the
+// staff's code; other businesses show as grey pins. Touristic places need no
+// partner and earn TOURISTIC_POINTS.
+//
+// Each tier has a monthly budget of check-ins at full points, counted in
+// placeBudgets/{placeId}_{YYYY-MM} (every group member counts). Once it's used
+// up, check-ins there earn TOURISTIC_POINTS until the month changes.
+//
+// Against farming: partner points per user per day are capped at
+// DAILY_PARTNER_POINTS_CAP (after group multipliers; the check-in still
+// counts, for less), check-ins per place per user are limited to
+// MAX_CHECK_INS_PER_PLACE_PER_WEEK, two people can only be in a group at the
+// same place once every GROUP_REPEAT_DAYS, and owners can't check in at their
+// own place. Days and months follow TIME_ZONE.
+// ---------------------------------------------------------------------------
+
+const TIERS = {
+  basic: { label: 'Basic', points: 25, monthlyBudget: 100 },
+  premium: { label: 'Premium', points: 50, monthlyBudget: 500 },
+  diamond: { label: 'Diamond', points: 100, monthlyBudget: null }, // unlimited
+};
+const TOURISTIC_POINTS = 5;
+const DAILY_PARTNER_POINTS_CAP = 3 * TIERS.diamond.points;
+const GROUP_REPEAT_DAYS = 7;
+const TIME_ZONE = 'Europe/Stockholm';
+
+/** 'YYYY-MM-DD' in TIME_ZONE. */
+function dayKey(ms) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(new Date(ms));
+}
+
+function monthKey(ms) {
+  return dayKey(ms).slice(0, 7);
+}
+
+/** E.g. 'on Mon 13 Oct', for messages. */
+function formatDay(ms) {
+  return 'on ' + new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, weekday: 'short', day: 'numeric', month: 'short' })
+    .format(new Date(ms));
+}
+
+/** The place's tier if it's a partner, else null. */
+function partnerTier(businessDoc) {
+  if (!businessDoc?.exists || businessDoc.get('status') !== 'approved') return null;
+  const tier = businessDoc.get('tier');
+  return Object.hasOwn(TIERS, tier) ? tier : null;
+}
+
+function budgetRef(db, placeId) {
+  return db.collection('placeBudgets').doc(`${placeId}_${monthKey(Date.now())}`);
+}
+
+function budgetUsedUp(tier, budgetDoc) {
+  const budget = TIERS[tier].monthlyBudget;
+  return budget !== null && (budgetDoc.exists ? budgetDoc.get('used') ?? 0 : 0) >= budget;
+}
+
+/** Base points before group multipliers. */
+function checkInPoints(tier, budgetDoc) {
+  if (!tier || budgetUsedUp(tier, budgetDoc)) return TOURISTIC_POINTS;
+  return TIERS[tier].points;
+}
+
+/** Counts a check-in against the place's monthly budget. Unlimited tiers are counted too, for stats. */
+function useBudget(tx, db, placeId) {
+  tx.set(budgetRef(db, placeId), { placeId, month: monthKey(Date.now()), used: FieldValue.increment(1) }, { merge: true });
+}
+
+function partnerPointsLeftToday(userDoc) {
+  const today = userDoc.get('partnerPointsToday');
+  const used = today?.day === dayKey(Date.now()) ? today.points ?? 0 : 0;
+  return Math.max(0, DAILY_PARTNER_POINTS_CAP - used);
+}
+
+/**
+ * Gives a user up to [points] partner points, as far as today's cap allows.
+ * Returns how many they got.
+ */
+function awardPartnerPoints(tx, userRef, userDoc, points) {
+  const left = partnerPointsLeftToday(userDoc);
+  const given = Math.min(points, left);
+  if (given > 0) {
+    tx.update(userRef, {
+      points: FieldValue.increment(given),
+      partnerPointsToday: { day: dayKey(Date.now()), points: DAILY_PARTNER_POINTS_CAP - left + given },
+    });
+  }
+  return given;
+}
+
+function throwIfOwnPlace(businessDoc, uid, place) {
+  if (businessDoc?.exists && businessDoc.get('ownerUid') === uid) {
+    throw new HttpsError('permission-denied', `You can't check in at ${place.name}, since you manage it.`);
+  }
+}
+
+/** Members of [others] that [lastCheckInDoc]'s user was in a group with at this place recently. */
+function recentGroupmates(lastCheckInDoc, others) {
+  const groupedWith = lastCheckInDoc.exists ? lastCheckInDoc.get('groupedWith') ?? {} : {};
+  return others.filter((other) => {
+    const at = groupedWith[other]?.toMillis();
+    return at && Date.now() - at < GROUP_REPEAT_DAYS * 24 * 3600 * 1000;
+  });
+}
+
 /** Returns check-in eligible places near the given position. */
 exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
   if (!request.auth) {
@@ -444,36 +588,49 @@ exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
   }
   const { lat, lng } = readCoordinates(request.data, 'latitude', 'longitude');
 
-  const data = await placesRequest('places:searchNearby', {
+  const results = await Promise.all(SEARCHES.map((includedTypes) => placesRequest('places:searchNearby', {
     method: 'POST',
     fieldMask: PLACE_FIELDS.map((f) => `places.${f}`).join(','),
     body: {
-      includedTypes: SEARCH_INCLUDED_TYPES,
+      includedTypes,
       maxResultCount: 20,
       rankPreference: 'DISTANCE',
       locationRestriction: {
         circle: { center: { latitude: lat, longitude: lng }, radius: NEARBY_RADIUS_METERS },
       },
     },
-  });
+  })));
+  const found = new Map();
+  for (const p of results.flatMap((r) => r.places ?? [])) found.set(p.id, p);
+  const places = [...found.values()].map(toPlace).filter((p) => isCheckInEligible(p.types))
+    .sort((a, b) => distanceMeters(lat, lng, a.latitude, a.longitude) - distanceMeters(lat, lng, b.latitude, b.longitude));
 
-  const places = (data.places ?? []).map(toPlace).filter((p) => isCheckInEligible(p.types));
+  // Businesses: partner or not, and what a check-in is worth this month.
+  const db = getFirestore();
+  const businesses = places.filter((p) => BUSINESS_CATEGORIES.includes(p.category));
+  const businessDocs = businesses.length === 0 ? [] :
+    await db.getAll(...businesses.map((p) => db.collection('businesses').doc(p.id)));
+  const tiers = new Map(businesses.map((p, i) => [p.id, partnerTier(businessDocs[i])]));
+  const partners = places.filter((p) => tiers.get(p.id));
+  const budgetDocs = partners.length === 0 ? [] : await db.getAll(...partners.map((p) => budgetRef(db, p.id)));
+  const budgets = new Map(partners.map((p, i) => [p.id, budgetDocs[i]]));
 
-  // A place needs a code once its business has been approved.
-  const businessDocs = places.length === 0 ? [] : await getFirestore().getAll(
-    ...places.map((p) => getFirestore().collection('businesses').doc(p.id)));
-  places.forEach((p, i) => {
-    p.requiresCode = BUSINESS_CATEGORIES.includes(p.category) &&
-      businessDocs[i].exists && businessDocs[i].get('status') === 'approved';
-  });
+  for (const p of places) {
+    const tier = tiers.get(p.id) ?? null;
+    p.partner = tier !== null;
+    p.tier = tier;
+    p.requiresCode = p.partner;
+    p.budgetUsedUp = p.partner && budgetUsedUp(tier, budgets.get(p.id));
+    p.points = p.partner ? checkInPoints(tier, budgets.get(p.id)) : TOURISTIC_POINTS;
+  }
   logger.info('nearbyPlaces', {
-    uid: request.auth.uid, found: data.places?.length ?? 0, eligible: places.length,
+    uid: request.auth.uid, found: found.size, eligible: places.length, partners: partners.length,
     appCheck: appCheckStatus(request),
   });
   return { places };
 });
 
-// Group check-ins: at a registered business, the customer who uses the code
+// Group check-ins: at a partner business, the customer who uses the code
 // can invite up to GROUP_MAX_SIZE - 1 friends. Each friend joins from their
 // own phone (joinGroup) within GROUP_WINDOW_MINUTES, at the place. Everyone's
 // base points are multiplied by GROUP_MULTIPLIERS for the group's size, and
@@ -481,16 +638,6 @@ exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
 const GROUP_MAX_SIZE = 6;
 const GROUP_WINDOW_MINUTES = 10;
 const GROUP_MULTIPLIERS = { 1: 1, 2: 1.5, 3: 2, 4: 3, 5: 3.5, 6: 5 };
-
-/** Points for this user at this place: rarity times distance from home. */
-function basePoints(userDoc, place, timesCheckedIn) {
-  const homeLat = userDoc.get('homeLatitude');
-  const homeLng = userDoc.get('homeLongitude');
-  const homeKm = typeof homeLat === 'number' && typeof homeLng === 'number'
-    ? distanceMeters(homeLat, homeLng, place.latitude, place.longitude) / 1000
-    : 0;
-  return Math.round(rarityPoints(timesCheckedIn) * distanceMultiplier(homeKm));
-}
 
 function readUid(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9]{1,128}$/.test(value)) {
@@ -518,11 +665,11 @@ async function readGroupFriends(db, uid, value) {
  * Checks the caller in at a place and awards points.
  *
  * The place's location and types come from the Places API, not the client.
- * The caller must be within CHECK_IN_RANGE_METERS of it and can check in at
- * the same place once every CHECK_IN_COOLDOWN_HOURS. At a restaurant, café or
- * hotel whose business has registered, the caller must also give the
- * business's current code, which then can't be used again, and may invite
- * friends (friendUids) to join as a group.
+ * The caller must be within CHECK_IN_RANGE_METERS of it, at most once every
+ * CHECK_IN_COOLDOWN_HOURS and MAX_CHECK_INS_PER_PLACE_PER_WEEK times a week.
+ * Businesses must be partners (see Partners): the caller gives the staff's
+ * current code, which then can't be used again, and may invite friends
+ * (friendUids) to join as a group.
  */
 exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   const uid = request.auth?.uid;
@@ -557,39 +704,51 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   const lastCheckInRef = db.collection('users').doc(uid).collection('placeCheckIns').doc(placeId);
   const checkInRef = db.collection('checkIns').doc();
 
-  const requiresCode = BUSINESS_CATEGORIES.includes(place.category) &&
-    (await db.collection('businesses').doc(placeId).get()).get('status') === 'approved';
+  const isBusiness = BUSINESS_CATEGORIES.includes(place.category);
+  const businessDoc = isBusiness ? await db.collection('businesses').doc(placeId).get() : null;
+  const tier = partnerTier(businessDoc);
+  if (isBusiness && !tier) {
+    throw new HttpsError('failed-precondition', `${place.name} isn't a partner yet, so you can't check in there.`);
+  }
+  throwIfOwnPlace(businessDoc, uid, place);
+
   const friendUids = await readGroupFriends(db, uid, request.data?.friendUids);
-  if (friendUids.length > 0 && !requiresCode) {
-    throw new HttpsError('failed-precondition',
-      'Group check-ins are only available at registered restaurants, cafés and hotels.');
+  if (friendUids.length > 0 && !tier) {
+    throw new HttpsError('failed-precondition', 'Group check-ins are only available at partner businesses.');
+  }
+  if (friendUids.includes(businessDoc?.get('ownerUid'))) {
+    throw new HttpsError('failed-precondition', `You can't invite the manager of ${place.name}.`);
   }
 
   // Checked first so a code can't be used up, or count as a wrong guess,
   // when the check-in would be refused anyway. The transaction below checks
   // again.
+  const lastBefore = await lastCheckInRef.get();
+  throwIfCheckInLimitReached(lastBefore, place);
+  throwIfRepeatGroup(lastBefore, friendUids, place);
   if (!devTester) throwIfImpossibleTravel(await userRef.get(), place);
-  if (requiresCode) {
-    throwIfCheckedInRecently(await lastCheckInRef.get(), place);
+  if (tier) {
     await useBusinessCode(db, uid, place, request.data?.code);
   }
 
   const groupRef = friendUids.length > 0 ? db.collection('groups').doc() : null;
 
-  const pointsEarned = await db.runTransaction(async (tx) => {
-    const [userDoc, placeDoc, lastDoc] = await Promise.all([
-      tx.get(userRef), tx.get(placeRef), tx.get(lastCheckInRef),
+  const result = await db.runTransaction(async (tx) => {
+    const [userDoc, lastDoc, budgetDoc] = await Promise.all([
+      tx.get(userRef), tx.get(lastCheckInRef), tier ? tx.get(budgetRef(db, placeId)) : null,
     ]);
 
     if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
       throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
     }
 
-    throwIfCheckedInRecently(lastDoc, place);
+    throwIfCheckInLimitReached(lastDoc, place);
     if (!devTester) throwIfImpossibleTravel(userDoc, place);
 
-    const timesCheckedIn = placeDoc.exists ? (placeDoc.get('timesCheckedIn') ?? 0) : 0;
-    const points = basePoints(userDoc, place, timesCheckedIn);
+    const base = checkInPoints(tier, budgetDoc);
+    const points = tier ? awardPartnerPoints(tx, userRef, userDoc, base) : base;
+    if (!tier) tx.update(userRef, { points: FieldValue.increment(points) });
+    if (tier) useBudget(tx, db, placeId);
 
     const now = FieldValue.serverTimestamp();
     tx.set(placeRef, {
@@ -600,12 +759,12 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
       category: place.category,
       timesCheckedIn: FieldValue.increment(1),
     }, { merge: true });
-    tx.set(lastCheckInRef, { lastCheckInAt: now });
+    tx.set(lastCheckInRef, placeCheckInUpdate(lastDoc), { merge: true });
     tx.set(checkInRef, {
-      uid, placeId, placeName: place.name, points, distanceMeters: Math.round(distance), createdAt: now,
-      ...(groupRef ? { groupId: groupRef.id } : {}),
+      uid, placeId, placeName: place.name, tier, basePoints: base, points, distanceMeters: Math.round(distance),
+      createdAt: now, ...(groupRef ? { groupId: groupRef.id } : {}),
     });
-    tx.update(userRef, { points: FieldValue.increment(points), lastCheckIn: lastCheckInOf(place) });
+    tx.update(userRef, { lastCheckIn: lastCheckInOf(place) });
 
     if (groupRef) {
       const expiresAt = Timestamp.fromMillis(Date.now() + GROUP_WINDOW_MINUTES * 60 * 1000);
@@ -614,12 +773,12 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
         placeName: place.name,
         latitude: place.latitude,
         longitude: place.longitude,
+        tier,
+        ownerUid: businessDoc.get('ownerUid'),
         primaryUid: uid,
         members: [uid],
         invited: friendUids,
-        // Everyone's base points use the place's rarity when the group started.
-        rarityCount: timesCheckedIn,
-        basePoints: { [uid]: points },
+        basePoints: { [uid]: base },
         awarded: { [uid]: points },
         size: 1,
         status: 'open',
@@ -637,24 +796,34 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
         });
       }
     }
-    return points;
+    return { pointsEarned: points, capped: points < base, budgetUsedUp: !!tier && budgetUsedUp(tier, budgetDoc) };
   });
 
-  logger.info('Checked in', { uid, placeId, pointsEarned, groupId: groupRef?.id, invited: friendUids.length });
+  logger.info('Checked in', { uid, placeId, tier, ...result, groupId: groupRef?.id, invited: friendUids.length });
   return {
-    pointsEarned,
+    ...result,
     placeName: place.name,
     groupId: groupRef?.id ?? null,
     invited: friendUids.length,
     groupWindowMinutes: GROUP_WINDOW_MINUTES,
+    dailyPartnerPointsCap: DAILY_PARTNER_POINTS_CAP,
   };
 });
 
+function throwIfRepeatGroup(lastCheckInDoc, others, place) {
+  if (recentGroupmates(lastCheckInDoc, others).length > 0) {
+    throw new HttpsError('failed-precondition',
+      `You can only check in at ${place.name} as a group with the same friend once every ` +
+      `${GROUP_REPEAT_DAYS} days. Leave out friends you've been there with this week.`);
+  }
+}
+
 /**
  * Joins a group check-in the caller was invited to. The caller must be at the
- * place, and hasn't checked in there in the last CHECK_IN_COOLDOWN_HOURS;
- * joining counts as their check-in. Everyone in the group, including the
- * caller, is brought up to their base points times the new size's multiplier.
+ * place, within its check-in limits, and not in a group there with any member
+ * in the last GROUP_REPEAT_DAYS; joining counts as their check-in. Everyone in
+ * the group, including the caller, is brought up to their base points times
+ * the new size's multiplier, as far as each one's daily cap allows.
  */
 exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
   const uid = request.auth?.uid;
@@ -705,6 +874,12 @@ exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
     ]);
     const group = groupDoc.data();
     const members = group.members ?? [];
+    const tier = Object.hasOwn(TIERS, group.tier) ? group.tier : null;
+    const memberRefs = members.map((m) => db.collection('users').doc(m));
+    const [budgetDoc, ...memberDocs] = await Promise.all([
+      tier ? tx.get(budgetRef(db, place.id)) : null,
+      ...memberRefs.map((ref) => tx.get(ref)),
+    ]);
 
     if (!(group.invited ?? []).includes(uid)) {
       throw new HttpsError('permission-denied', 'You weren\'t invited to this group check-in.');
@@ -721,32 +896,51 @@ exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
     if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
       throw new HttpsError('failed-precondition', 'Verify your phone number before checking in.');
     }
-    throwIfCheckedInRecently(lastDoc, place);
+    if (group.ownerUid === uid) {
+      throw new HttpsError('permission-denied', `You can't check in at ${place.name}, since you manage it.`);
+    }
+    throwIfCheckInLimitReached(lastDoc, place);
+    const repeats = recentGroupmates(lastDoc, members);
+    if (repeats.length > 0) {
+      throw new HttpsError('failed-precondition',
+        `You've already been in a group at ${place.name} with someone in this one in the last ` +
+        `${GROUP_REPEAT_DAYS} days. You can still check in there on your own.`);
+    }
     if (!devTester) throwIfImpossibleTravel(userDoc, place);
 
     const newMembers = [...members, uid];
     const size = newMembers.length;
     const multiplier = GROUP_MULTIPLIERS[size];
-    const myBase = basePoints(userDoc, place, group.rarityCount ?? 0);
+    const myBase = checkInPoints(tier, budgetDoc);
     const base = { ...group.basePoints, [uid]: myBase };
     const awarded = { ...group.awarded };
-    for (const member of newMembers) {
-      const target = Math.round(base[member] * multiplier);
-      const topUp = target - (awarded[member] ?? 0);
-      if (topUp !== 0) {
-        tx.update(db.collection('users').doc(member), { points: FieldValue.increment(topUp) });
-      }
-      awarded[member] = target;
-    }
+    const refs = [...memberRefs, userRef];
+    const docs = [...memberDocs, userDoc];
+    let capped = false;
+    newMembers.forEach((member, i) => {
+      const wanted = Math.round(base[member] * multiplier) - (awarded[member] ?? 0);
+      if (wanted <= 0) return;
+      const given = awardPartnerPoints(tx, refs[i], docs[i], wanted);
+      awarded[member] = (awarded[member] ?? 0) + given;
+      if (member === uid) capped = given < wanted;
+    });
+    if (tier) useBudget(tx, db, place.id);
 
     const full = size >= GROUP_MAX_SIZE;
     tx.update(groupRef, { members: newMembers, basePoints: base, awarded, size, status: full ? 'full' : 'open' });
 
     const now = FieldValue.serverTimestamp();
-    tx.set(lastCheckInRef, { lastCheckInAt: now });
+    const nowTs = Timestamp.now();
+    tx.set(lastCheckInRef, {
+      ...placeCheckInUpdate(lastDoc),
+      groupedWith: Object.fromEntries(members.map((m) => [m, nowTs])),
+    }, { merge: true });
+    for (const member of members) {
+      tx.set(db.doc(`users/${member}/placeCheckIns/${place.id}`), { groupedWith: { [uid]: nowTs } }, { merge: true });
+    }
     tx.update(userRef, { lastCheckIn: lastCheckInOf(place) });
     tx.set(checkInRef, {
-      uid, placeId: place.id, placeName: place.name, points: myBase, groupId,
+      uid, placeId: place.id, placeName: place.name, tier, basePoints: myBase, points: awarded[uid] ?? 0, groupId,
       distanceMeters: Math.round(distance), createdAt: now,
     });
     tx.set(placeRef, { timesCheckedIn: FieldValue.increment(1) }, { merge: true });
@@ -761,17 +955,17 @@ exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
         tx.delete(db.doc(`users/${invited}/groupInvites/${groupId}`));
       }
     }
-    return { pointsEarned: awarded[uid], groupSize: size, multiplier };
+    return { pointsEarned: awarded[uid] ?? 0, groupSize: size, multiplier, capped };
   });
 
   logger.info('Joined group', { uid, groupId, ...result });
-  return { ...result, placeName: place.name };
+  return { ...result, placeName: place.name, dailyPartnerPointsCap: DAILY_PARTNER_POINTS_CAP };
 });
 
 // ---------------------------------------------------------------------------
 // Business codes
 //
-// A restaurant, café or hotel can claim its place (requestBusinessClaim); the
+// A restaurant, café, hotel or shop can claim its place (requestBusinessClaim); the
 // claim waits in businesses/{placeId} until approved with
 // scripts/business-claims.js, which also creates the place's secret in
 // businessSecrets/{placeId}. Clients can never read that collection.
@@ -929,7 +1123,7 @@ async function readOwnBusiness(db, uid, placeId) {
   return businessDoc;
 }
 
-/** Asks to manage a restaurant, café or hotel. Approved by an admin. */
+/** Asks to manage a restaurant, café, hotel or shop. Approved by an admin. */
 exports.requestBusinessClaim = onCall(async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
@@ -938,7 +1132,7 @@ exports.requestBusinessClaim = onCall(async (request) => {
   const placeId = readPlaceId(request.data?.placeId);
   const place = toPlace(await placesRequest(`places/${placeId}`, { fieldMask: PLACE_FIELDS.join(',') }));
   if (!BUSINESS_CATEGORIES.includes(place.category)) {
-    throw new HttpsError('failed-precondition', 'Only restaurants, cafés and hotels can be registered.');
+    throw new HttpsError('failed-precondition', 'Only restaurants, cafés, hotels and shops can be registered.');
   }
 
   const db = getFirestore();
@@ -1003,8 +1197,8 @@ exports.newBusinessCode = onCall(async (request) => {
 /**
  * Check-in counts for a place the caller manages: since the start of the
  * owner's day (todayStart, sent by the app since it knows the time zone), the
- * last 7 days, and since approval, plus group check-ins. Counts only - owners
- * never see who checked in.
+ * last 7 days, and since approval, plus group check-ins, and its partner tier
+ * and this month's budget use. Counts only - owners never see who checked in.
  */
 exports.getBusinessStats = onCall(async (request) => {
   const uid = request.auth?.uid;
@@ -1035,13 +1229,69 @@ exports.getBusinessStats = onCall(async (request) => {
 
   const groupCount = businessDoc.get('groupCount') ?? 0;
   const groupMembers = businessDoc.get('groupMembers') ?? 0;
+  const tier = partnerTier(businessDoc);
+  const budgetDoc = tier ? await budgetRef(db, placeId).get() : null;
   return {
+    tier,
+    tierLabel: tier ? TIERS[tier].label : null,
+    tierPoints: tier ? TIERS[tier].points : null,
+    monthlyBudget: tier ? TIERS[tier].monthlyBudget : null,
+    usedThisMonth: budgetDoc?.exists ? budgetDoc.get('used') ?? 0 : 0,
     today,
     week,
     sinceApproval,
     groupCheckIns: groupCount,
     averageGroupSize: groupCount ? Math.round((groupMembers / groupCount) * 10) / 10 : null,
   };
+});
+
+// ---------------------------------------------------------------------------
+// Check-in spikes
+//
+// Every 15 minutes, flags places with an unusual number of check-ins in the
+// last hour: at least SPIKE_MIN_CHECK_INS, and SPIKE_FACTOR times their
+// hourly average over the last 7 days. Each flag is logged as
+// 'Check-in spike' and stored in alerts/{placeId}_{hour}, once per place per
+// hour (scripts/alerts.js lists them).
+// ---------------------------------------------------------------------------
+
+const SPIKE_MIN_CHECK_INS = 15;
+const SPIKE_FACTOR = 5;
+
+exports.checkInSpikes = onSchedule('every 15 minutes', async () => {
+  const db = getFirestore();
+  const now = Date.now();
+  const lastHour = await db.collection('checkIns')
+    .where('createdAt', '>=', Timestamp.fromMillis(now - 3600 * 1000))
+    .select('placeId', 'placeName').get();
+
+  const counts = new Map();
+  for (const doc of lastHour.docs) {
+    const entry = counts.get(doc.get('placeId')) ?? { placeName: doc.get('placeName'), count: 0 };
+    entry.count += 1;
+    counts.set(doc.get('placeId'), entry);
+  }
+
+  for (const [placeId, { placeName, count }] of counts) {
+    if (count < SPIKE_MIN_CHECK_INS) continue;
+    const week = (await db.collection('checkIns')
+      .where('placeId', '==', placeId)
+      .where('createdAt', '>=', Timestamp.fromMillis(now - WEEK_MS))
+      .count().get()).data().count;
+    const hourlyAverage = week / (7 * 24);
+    if (count < SPIKE_FACTOR * hourlyAverage) continue;
+
+    const alert = { placeId, placeName, lastHour: count, hourlyAverage: Math.round(hourlyAverage * 10) / 10 };
+    try {
+      await db.collection('alerts').doc(`${placeId}_${new Date(now).toISOString().slice(0, 13)}`).create({
+        type: 'checkInSpike', ...alert, createdAt: FieldValue.serverTimestamp(),
+      });
+    } catch (err) {
+      if (err.code === 6) continue; // ALREADY_EXISTS: flagged this hour already
+      throw err;
+    }
+    logger.warn('Check-in spike', alert);
+  }
 });
 
 // ---------------------------------------------------------------------------

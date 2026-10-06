@@ -1,13 +1,14 @@
-// Review business claims (restaurants, cafés, hotels asking for check-in
-// codes). Uses the firebase CLI's login, so run `firebase login` first.
+// Review business claims (restaurants, cafés, hotels and shops asking for
+// check-in codes). Uses the firebase CLI's login, so run `firebase login` first.
 //
 //   node scripts/business-claims.js list
 //   node scripts/business-claims.js approve <placeId>
 //   node scripts/business-claims.js reject <placeId>   (also revokes an approval)
 //
-// Approving creates the place's code secret; from then on check-ins there
-// need the code shown in the owner's app. Rejecting makes the place
-// location-only again, and lets anyone claim it.
+// Approving creates the place's code secret. Check-ins open once it also has
+// a partner tier (scripts/partner-tiers.js), and need the code shown in the
+// owner's app. Rejecting closes check-ins there again, and lets anyone claim
+// it.
 
 const crypto = require('crypto');
 const { FieldValue } = require('@google-cloud/firestore'); // installed with firebase-admin
@@ -44,7 +45,7 @@ async function approve(db, placeId) {
       tx.create(secretRef, { secret: crypto.randomBytes(20).toString('base64'), createdAt: FieldValue.serverTimestamp() });
     }
   });
-  console.log(`Approved ${placeId}. Check-ins there now need the owner's code.`);
+  console.log(`Approved ${placeId}. Set its tier with partner-tiers.js to open check-ins there.`);
 }
 
 async function reject(db, placeId) {
@@ -52,7 +53,7 @@ async function reject(db, placeId) {
   const business = await businessRef.get();
   if (!business.exists) throw new Error(`No claim for ${placeId}.`);
   await businessRef.update({ status: 'rejected', rejectedAt: FieldValue.serverTimestamp() });
-  console.log(`Rejected ${business.get('placeName')}. It's location-only again.`);
+  console.log(`Rejected ${business.get('placeName')}. Check-ins there are closed.`);
 }
 
 async function main() {
