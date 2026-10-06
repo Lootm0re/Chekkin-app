@@ -5,19 +5,30 @@ class Reward {
   final int pointsRequired;
   final String description;
 
+  /// Shown but not yet available, so it can't be redeemed.
+  final bool comingSoon;
+
   Reward({
     required this.name,
     required this.pointsRequired,
     required this.description,
+    this.comingSoon = false,
   });
 }
 
+// Costs suit a heavy user earning about 300 points a day (the daily partner
+// cap): a coffee every couple of days, a weekend away in about two months.
 final List<Reward> availableRewards = [
-  Reward(name: 'Coffee Voucher', pointsRequired: 5000, description: 'Free coffee at a partner cafe'),
-  Reward(name: 'Museum Pass', pointsRequired: 25000, description: 'Free entry to a partner museum'),
-  Reward(name: 'Restaurant Discount', pointsRequired: 100000, description: '50% off at a partner restaurant'),
-  Reward(name: 'Weekend Getaway', pointsRequired: 500000, description: 'A free weekend stay'),
-  Reward(name: 'Free Flight Ticket', pointsRequired: 1000000, description: 'A free ticket to anywhere on our partner airline'),
+  Reward(name: 'Coffee Voucher', pointsRequired: 500, description: 'Free coffee at a partner cafe'),
+  Reward(name: 'Museum Pass', pointsRequired: 1500, description: 'Free entry to a partner museum'),
+  Reward(name: 'Restaurant Discount', pointsRequired: 5000, description: '50% off at a partner restaurant'),
+  Reward(name: 'Weekend Getaway', pointsRequired: 20000, description: 'A free weekend stay', comingSoon: true),
+  Reward(
+    name: 'Free Flight Ticket',
+    pointsRequired: 40000,
+    description: 'A free ticket to anywhere on our partner airline',
+    comingSoon: true,
+  ),
 ];
 
 class RewardsScreen extends StatelessWidget {
@@ -27,7 +38,7 @@ class RewardsScreen extends StatelessWidget {
 
   Reward? _getNextReward() {
     for (Reward reward in availableRewards) {
-      if (userPoints < reward.pointsRequired) {
+      if (!reward.comingSoon && userPoints < reward.pointsRequired) {
         return reward;
       }
     }
@@ -73,23 +84,25 @@ class RewardsScreen extends StatelessWidget {
           const SizedBox(height: 8),
 
           ...availableRewards.map((reward) {
-            bool unlocked = userPoints >= reward.pointsRequired;
+            bool unlocked = !reward.comingSoon && userPoints >= reward.pointsRequired;
 
             return Card(
               child: ListTile(
                 leading: Icon(
-                  unlocked ? Icons.check_circle : Icons.lock_outline,
+                  reward.comingSoon ? Icons.schedule : (unlocked ? Icons.check_circle : Icons.lock_outline),
                   color: unlocked ? Colors.green : Colors.grey,
                 ),
                 title: Text(reward.name),
                 subtitle: Text('${reward.description}\n${reward.pointsRequired} points'),
                 isThreeLine: true,
-                trailing: unlocked
-                    ? ElevatedButton(
-                        onPressed: () => _redeemReward(context, reward),
-                        child: const Text('Redeem'),
-                      )
-                    : null,
+                trailing: reward.comingSoon
+                    ? const Chip(label: Text('Coming soon'), visualDensity: VisualDensity.compact)
+                    : unlocked
+                        ? ElevatedButton(
+                            onPressed: () => _redeemReward(context, reward),
+                            child: const Text('Redeem'),
+                          )
+                        : null,
               ),
             );
           }),
