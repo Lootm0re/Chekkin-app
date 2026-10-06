@@ -16,6 +16,10 @@ class Reward {
   });
 }
 
+/// Off until a server function actually redeems rewards (takes the points
+/// and issues a voucher). Until then, earned rewards show "Coming soon".
+const bool redeemingOpen = false;
+
 // Costs suit a heavy user earning about 300 points a day (the daily partner
 // cap): a coffee every couple of days, a weekend away in about two months.
 final List<Reward> availableRewards = [
@@ -99,8 +103,8 @@ class RewardsScreen extends StatelessWidget {
                     ? const Chip(label: Text('Coming soon'), visualDensity: VisualDensity.compact)
                     : unlocked
                         ? ElevatedButton(
-                            onPressed: () => _redeemReward(context, reward),
-                            child: const Text('Redeem'),
+                            onPressed: redeemingOpen ? () => _redeemReward(context, reward) : null,
+                            child: Text(redeemingOpen ? 'Redeem' : 'Coming soon'),
                           )
                         : null,
               ),
