@@ -1,9 +1,12 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
+import 'app_only.dart';
+import 'dev_app_check_screen.dart';
 import 'auth_screen.dart';
 import 'map_screen.dart';
 import 'rewards_screen.dart';
@@ -27,11 +30,16 @@ void main() async {
 const String _recaptchaSiteKey = '6LePf-ItAAAAAAlz3lEzaUxuLdg9q5hJ4JFR7PQq';
 
 /// Attaches App Check tokens to Firebase requests, so the server can tell
-/// they come from this app. It isn't enforced yet, so if it fails the app
-/// carries on without it.
+/// they come from this app. If it fails the app carries on without it; the
+/// server then only lets dev testers check in. Android uses Play Integrity,
+/// which only works for installs from Google Play, so DEV_TOOLS builds (sideloaded
+/// test APKs) use the debug provider instead: see DevAppCheckScreen.
 Future<void> _activateAppCheck() async {
   try {
-    await FirebaseAppCheck.instance.activate(webProvider: ReCaptchaEnterpriseProvider(_recaptchaSiteKey));
+    await FirebaseAppCheck.instance.activate(
+      webProvider: ReCaptchaEnterpriseProvider(_recaptchaSiteKey),
+      androidProvider: devTools ? AndroidProvider.debug : AndroidProvider.playIntegrity,
+    );
   } catch (e) {
     debugPrint('App Check activation failed: $e');
   }
@@ -266,6 +274,16 @@ class ProfileScreen extends StatelessWidget {
                   MaterialPageRoute(builder: (_) => const BusinessScreen()),
                 ),
               ),
+              if (devTools && !kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.verified_user),
+                  label: const Text('DEV: App Check code'),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const DevAppCheckScreen()),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               ElevatedButton(
                 onPressed: () => FirebaseAuth.instance.signOut(),

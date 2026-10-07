@@ -405,11 +405,14 @@ function appCheckStatus(request) {
 }
 
 // Firebase app IDs of the iOS and Android apps, whose App Check tokens are
-// accepted by throwUnlessFromApp. Empty until the apps are registered in
-// Firebase (flutterfire configure); add their IDs here then. The web app is
-// left out on purpose: the product is app-only, and web builds are only for
-// testing.
-const MOBILE_APP_IDS = [];
+// accepted by throwUnlessFromApp. The web app is left out on purpose: the
+// product is app-only, and web builds are only for testing. Android tokens
+// come from Play Integrity (installs from Google Play), or for sideloaded
+// DEV_TOOLS test builds, from debug tokens added in the Firebase console.
+// iOS isn't registered yet.
+const MOBILE_APP_IDS = [
+  '1:929780239850:android:528c6d1770ddd6cd45f693', // Chekkin Android (com.chekkin.app)
+];
 
 /**
  * Throws unless the call comes from the iOS or Android app, proven by a valid
