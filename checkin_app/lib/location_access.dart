@@ -74,6 +74,15 @@ Future<Position> _getNativePosition() async {
   if (permission == LocationPermission.denied) {
     throw const LocationAccessException('Location permission is needed for this. Please allow it and try again.');
   }
+  // Android 12+ and iOS let the user share only an approximate location,
+  // which is off by a kilometre or more: too rough to check in.
+  if (await Geolocator.getLocationAccuracy() == LocationAccuracyStatus.reduced) {
+    throw const LocationAccessException(
+      'Chekkin needs your precise location to check you in. Turn on "Precise location" for Chekkin '
+      'in Settings and try again.',
+      canOpenSettings: true,
+    );
+  }
 
   try {
     return await Geolocator.getCurrentPosition().timeout(const Duration(seconds: 10));
