@@ -5,6 +5,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'app_only.dart';
 import 'check_in_place.dart';
 import 'location_access.dart';
 
@@ -16,6 +17,15 @@ class BusinessScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     String uid = FirebaseAuth.instance.currentUser!.uid;
+
+    if (!appOnlyFeaturesAvailable) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('My Business')),
+        body: const Center(
+          child: Padding(padding: EdgeInsets.all(24), child: Text(appOnlyMessage, textAlign: TextAlign.center)),
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('My Business')),

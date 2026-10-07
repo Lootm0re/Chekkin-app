@@ -376,15 +376,14 @@ function placeCheckInUpdate(lastCheckInDoc) {
 //
 // The device position comes from the client, so it can always be faked;
 // these checks make that harder. The app sends the fix's accuracy, when it was
-// taken and whether the OS flagged it as mocked (Android only; web and iOS
-// always say no). A check-in must also be reachable in time from the user's
+// taken and whether the OS flagged it as mocked (Android, and iOS 15+ for
+// software-simulated locations; web always says no). A check-in must also be reachable in time from the user's
 // previous one (users/{uid}.lastCheckIn). Accounts listed in devTesters/{uid}
 // (scripts/dev-testers.js) skip these checks, so DEV_TOOLS builds can check in
 // from a pretend location.
 //
-// App Check is monitor-only for now: calls without a valid token still work,
-// and each one logs appCheck 'verified' or 'missing'. Once real users all show
-// 'verified', set enforceAppCheck to true.
+// Check-ins only come from the iOS and Android apps: see throwUnlessFromApp.
+// enforceAppCheck stays off so dev testers can call without a token.
 // ---------------------------------------------------------------------------
 
 const LOCATION_CALLABLE = { enforceAppCheck: false };
@@ -403,6 +402,28 @@ const NEARBY_TRAVEL_KM = 1;
 
 function appCheckStatus(request) {
   return request.app ? 'verified' : 'missing';
+}
+
+// Firebase app IDs of the iOS and Android apps, whose App Check tokens are
+// accepted by throwUnlessFromApp. Empty until the apps are registered in
+// Firebase (flutterfire configure); add their IDs here then. The web app is
+// left out on purpose: the product is app-only, and web builds are only for
+// testing.
+const MOBILE_APP_IDS = [];
+
+/**
+ * Throws unless the call comes from the iOS or Android app, proven by a valid
+ * App Check token, or from a dev tester (devTesters/{uid}), who may use the
+ * DEV_TOOLS web build. Returns whether the caller is a dev tester.
+ */
+async function throwUnlessFromApp(db, uid, request, action) {
+  if (await isDevTester(db, uid)) return true;
+  const appId = request.app?.appId ?? null;
+  if (!MOBILE_APP_IDS.includes(appId)) {
+    logger.warn('Refused call from outside the apps', { uid, action, appId, appCheck: appCheckStatus(request) });
+    throw new HttpsError('permission-denied', 'This only works in the Chekkin app for iPhone and Android.');
+  }
+  return false;
 }
 
 function readDeviceFix(data) {
@@ -674,10 +695,10 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to check in.');
   }
+  const db = getFirestore();
+  const devTester = await throwUnlessFromApp(db, uid, request, 'performCheckIn');
   const placeId = readPlaceId(request.data?.placeId);
   const device = readDeviceFix(request.data);
-  const db = getFirestore();
-  const devTester = await isDevTester(db, uid);
   if (!devTester) throwIfUntrustedFix(device);
 
   const place = toPlace(await placesRequest(`places/${placeId}`, {
@@ -828,14 +849,13 @@ exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to join a group check-in.');
   }
+  const db = getFirestore();
+  const devTester = await throwUnlessFromApp(db, uid, request, 'joinGroup');
   const groupId = request.data?.groupId;
   if (typeof groupId !== 'string' || !/^[A-Za-z0-9]{1,64}$/.test(groupId)) {
     throw new HttpsError('invalid-argument', 'A valid group is required.');
   }
   const device = readDeviceFix(request.data);
-
-  const db = getFirestore();
-  const devTester = await isDevTester(db, uid);
   if (!devTester) throwIfUntrustedFix(device);
   const groupRef = db.collection('groups').doc(groupId);
   const inviteRef = db.doc(`users/${uid}/groupInvites/${groupId}`);
@@ -1127,13 +1147,14 @@ exports.requestBusinessClaim = onCall(async (request) => {
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to register your business.');
   }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'requestBusinessClaim');
   const placeId = readPlaceId(request.data?.placeId);
   const place = toPlace(await placesRequest(`places/${placeId}`, { fieldMask: PLACE_FIELDS.join(',') }));
   if (!BUSINESS_CATEGORIES.includes(place.category)) {
     throw new HttpsError('failed-precondition', 'Only restaurants, cafés, hotels and shops can be registered.');
   }
 
-  const db = getFirestore();
   const userRef = db.collection('users').doc(uid);
   const businessRef = db.collection('businesses').doc(placeId);
 
@@ -1171,8 +1192,9 @@ exports.getBusinessCode = onCall(async (request) => {
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to see your business code.');
   }
-  const placeId = readPlaceId(request.data?.placeId);
   const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'getBusinessCode');
+  const placeId = readPlaceId(request.data?.placeId);
   const businessDoc = await readOwnBusiness(db, uid, placeId);
   const { code, expiresAt, seq } = await currentBusinessCode(db, placeId);
   return { code, expiresAt, seq, placeName: businessDoc.get('placeName') };
@@ -1184,8 +1206,9 @@ exports.newBusinessCode = onCall(async (request) => {
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to manage your business.');
   }
-  const placeId = readPlaceId(request.data?.placeId);
   const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'newBusinessCode');
+  const placeId = readPlaceId(request.data?.placeId);
   const businessDoc = await readOwnBusiness(db, uid, placeId);
   const { code, expiresAt, seq } = await currentBusinessCode(db, placeId, { retire: true });
   logger.info('newBusinessCode', { uid, placeId, seq });
@@ -1203,8 +1226,9 @@ exports.getBusinessStats = onCall(async (request) => {
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to see your business stats.');
   }
-  const placeId = readPlaceId(request.data?.placeId);
   const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'getBusinessStats');
+  const placeId = readPlaceId(request.data?.placeId);
   const businessDoc = await readOwnBusiness(db, uid, placeId);
 
   const now = Date.now();

@@ -5,15 +5,11 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import 'app_only.dart';
 import 'check_in_place.dart';
 import 'group_check_in.dart';
 import 'location_access.dart';
 import 'pin_icons.dart';
-
-/// Dev-only location override, for testing check-ins away from a place.
-/// Off unless built with `--dart-define=DEV_TOOLS=true`; as a compile-time
-/// constant, release builds without it don't contain the dev code at all.
-const bool devTools = bool.fromEnvironment('DEV_TOOLS');
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -372,6 +368,10 @@ class _MapScreenState extends State<MapScreen> {
 
   /// Joins a friend's group check-in from the user's current position.
   Future<void> _joinGroup(String groupId) async {
+    if (!appOnlyFeaturesAvailable) {
+      _showMapMessage(appOnlyMessage);
+      return;
+    }
     try {
       Position position = await _readPosition();
       final response = await functions.httpsCallable('joinGroup').call({
@@ -620,7 +620,7 @@ class _MapScreenState extends State<MapScreen> {
                     child: Text(selectedPlace!.summary, style: const TextStyle(fontSize: 13)),
                   ),
                   const SizedBox(height: 8),
-                  if (selectedPlace!.requiresCode) ...[
+                  if (appOnlyFeaturesAvailable && selectedPlace!.requiresCode) ...[
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       decoration: BoxDecoration(
@@ -643,7 +643,7 @@ class _MapScreenState extends State<MapScreen> {
                     const SizedBox(height: 8),
                   ],
                   // Group check-ins are only at partner businesses.
-                  if (selectedPlace!.requiresCode) ...[
+                  if (appOnlyFeaturesAvailable && selectedPlace!.requiresCode) ...[
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                         backgroundColor: Colors.white,
@@ -665,26 +665,38 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     const SizedBox(height: 8),
                   ],
-                  // Rebuilds as the code is typed, to enable the button.
-                  ValueListenableBuilder<TextEditingValue>(
-                    valueListenable: codeController,
-                    builder: (context, code, _) {
-                      bool needsCode = selectedPlace!.requiresCode && code.text.trim().length != codeLength;
-                      return ElevatedButton(
-                        onPressed: isCheckingIn || needsCode ? null : _handleCheckIn,
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          minimumSize: const Size(double.infinity, 0),
-                        ),
-                        child: isCheckingIn
-                            ? const SizedBox(
-                                height: 20, width: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
-                            : Text('Check In at ${selectedPlace!.name}'),
-                      );
-                    },
-                  ),
+                  if (!appOnlyFeaturesAvailable)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 3)],
+                      ),
+                      child: const Text(appOnlyMessage, textAlign: TextAlign.center),
+                    )
+                  else
+                    // Rebuilds as the code is typed, to enable the button.
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: codeController,
+                      builder: (context, code, _) {
+                        bool needsCode = selectedPlace!.requiresCode && code.text.trim().length != codeLength;
+                        return ElevatedButton(
+                          onPressed: isCheckingIn || needsCode ? null : _handleCheckIn,
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            minimumSize: const Size(double.infinity, 0),
+                          ),
+                          child: isCheckingIn
+                              ? const SizedBox(
+                                  height: 20, width: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                )
+                              : Text('Check In at ${selectedPlace!.name}'),
+                        );
+                      },
+                    ),
                 ],
               ),
             ),
