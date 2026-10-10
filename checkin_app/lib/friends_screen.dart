@@ -3,6 +3,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'emulators.dart';
 import 'user_avatar.dart';
 
 /// The signed-in user's friends, as user ids. Names and pictures come from
@@ -44,7 +45,7 @@ class FriendsScreen extends StatefulWidget {
 
 class _FriendsScreenState extends State<FriendsScreen> {
   final TextEditingController usernameController = TextEditingController();
-  final FirebaseFunctions functions = FirebaseFunctions.instance;
+  final FirebaseFunctions functions = cloudFunctions;
   final String uid = FirebaseAuth.instance.currentUser!.uid;
   bool isSending = false;
 

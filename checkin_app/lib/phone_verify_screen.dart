@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import 'emulators.dart';
+
 class PhoneVerifyScreen extends StatefulWidget {
   const PhoneVerifyScreen({super.key});
 
@@ -90,7 +92,7 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
       // profile updates.
       step = 'confirmPhoneVerified function';
       try {
-        final result = await FirebaseFunctions.instance.httpsCallable('confirmPhoneVerified').call();
+        final result = await cloudFunctions.httpsCallable('confirmPhoneVerified').call();
         debugPrint('Phone verify: $step OK ${result.data}');
       } on FirebaseFunctionsException catch (e) {
         debugPrint('Phone verify: $step details=${e.details}');

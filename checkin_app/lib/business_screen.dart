@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'app_only.dart';
 import 'check_in_place.dart';
+import 'emulators.dart';
 import 'location_access.dart';
 
 /// For restaurant, café, hotel and shop owners: register a place, and once
@@ -210,7 +211,7 @@ class _BusinessCodeState extends State<_BusinessCode> {
     if (isLoading) return;
     isLoading = true;
     try {
-      final response = await FirebaseFunctions.instance.httpsCallable('getBusinessCode').call({
+      final response = await cloudFunctions.httpsCallable('getBusinessCode').call({
         'placeId': widget.placeId,
       });
       if (mounted) _setCode(response.data);
@@ -227,7 +228,7 @@ class _BusinessCodeState extends State<_BusinessCode> {
   Future<void> _retire() async {
     setState(() => isRetiring = true);
     try {
-      final response = await FirebaseFunctions.instance.httpsCallable('newBusinessCode').call({
+      final response = await cloudFunctions.httpsCallable('newBusinessCode').call({
         'placeId': widget.placeId,
       });
       if (!mounted) return;
@@ -326,7 +327,7 @@ class _BusinessStatsState extends State<_BusinessStats> {
     setState(() => isLoading = true);
     DateTime now = DateTime.now();
     try {
-      final response = await FirebaseFunctions.instance.httpsCallable('getBusinessStats').call({
+      final response = await cloudFunctions.httpsCallable('getBusinessStats').call({
         'placeId': widget.placeId,
         'todayStart': DateTime(now.year, now.month, now.day).millisecondsSinceEpoch,
       });
@@ -462,7 +463,7 @@ class _VerifyVoucherScreenState extends State<_VerifyVoucherScreen> {
       error = null;
     });
     try {
-      final response = await FirebaseFunctions.instance.httpsCallable('verifyVoucher').call({
+      final response = await cloudFunctions.httpsCallable('verifyVoucher').call({
         'code': codeController.text,
       });
       if (mounted) setState(() => accepted = response.data);
@@ -569,7 +570,7 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
     });
     try {
       final position = await getPositionWithPermission();
-      final response = await FirebaseFunctions.instance.httpsCallable('nearbyPlaces').call({
+      final response = await cloudFunctions.httpsCallable('nearbyPlaces').call({
         'latitude': position.latitude,
         'longitude': position.longitude,
       });
@@ -607,7 +608,7 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
 
     setState(() => submittingPlaceId = place.id);
     try {
-      await FirebaseFunctions.instance.httpsCallable('requestBusinessClaim').call({'placeId': place.id});
+      await cloudFunctions.httpsCallable('requestBusinessClaim').call({'placeId': place.id});
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${place.name} has been sent for approval.')),

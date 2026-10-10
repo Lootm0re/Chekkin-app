@@ -3,7 +3,9 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "test": "firebase emulators:exec --only firestore --project demo-chekkin-test \"node --test --test-concurrency=1 test/*.test.js\""
+    "test": "firebase emulators:exec --only firestore --project demo-chekkin-test \"node --test --test-concurrency=1 test/*.test.js\"",
+    "emulators": "bash scripts/emulators.sh",
+    "emulators:reseed": "FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 GCLOUD_PROJECT=demo-chekkin-dev node scripts/emulator-seed.js"
   },
   "engines": {
     "node": "22"

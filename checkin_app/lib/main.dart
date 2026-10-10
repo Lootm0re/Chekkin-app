@@ -7,6 +7,7 @@ import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
 import 'app_only.dart';
 import 'dev_app_check_screen.dart';
+import 'emulators.dart';
 import 'auth_screen.dart';
 import 'map_screen.dart';
 import 'rewards_screen.dart';
@@ -20,8 +21,15 @@ import 'user_avatar.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  await _activateAppCheck();
+  if (useEmulators) {
+    // Local test data only; App Check is left off, since the emulators
+    // don't check it.
+    await Firebase.initializeApp(options: emulatorFirebaseOptions);
+    await connectToEmulators();
+  } else {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    await _activateAppCheck();
+  }
   runApp(const CheckInApp());
 }
 
@@ -52,6 +60,14 @@ class CheckInApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Check In',
+      // A banner, so the emulator build is never mistaken for the real app.
+      builder: useEmulators
+          ? (context, child) => Banner(
+                message: 'EMULATOR',
+                location: BannerLocation.topEnd,
+                child: child!,
+              )
+          : null,
       theme: ThemeData(primarySwatch: Colors.blue),
       home: const AuthGate(),
     );

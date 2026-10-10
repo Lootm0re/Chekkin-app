@@ -246,6 +246,11 @@ const MAX_CHECK_INS_PER_PLACE_PER_WEEK = 2; // per user, rolling 7 days
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
 async function placesRequest(path, { method = 'GET', fieldMask, body }) {
+  // In the emulators (functions/scripts/emulators.sh), so a local test never
+  // runs up the real project's Places bill with someone's own credentials.
+  if (process.env.FUNCTIONS_EMULATOR === 'true') {
+    throw new HttpsError('unavailable', 'Places searches are turned off in the emulators.');
+  }
   const client = await googleAuth.getClient();
   const { token } = await client.getAccessToken();
   const res = await fetch(`https://places.googleapis.com/v1/${path}`, {

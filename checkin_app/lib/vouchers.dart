@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'app_only.dart';
+import 'emulators.dart';
 import 'rewards_screen.dart';
 
 const String _redeemAppOnlyMessage = 'Redeeming rewards works in the Chekkin app for iPhone and Android.';
@@ -56,7 +57,7 @@ class _RedeemRewardScreenState extends State<RedeemRewardScreen> {
       error = null;
     });
     try {
-      final response = await FirebaseFunctions.instance.httpsCallable('rewardPartners').call({
+      final response = await cloudFunctions.httpsCallable('rewardPartners').call({
         'rewardId': widget.reward.catalogId,
       });
       if (mounted) setState(() => places = List<Map>.from(response.data['places']));
@@ -87,7 +88,7 @@ class _RedeemRewardScreenState extends State<RedeemRewardScreen> {
 
     setState(() => redeemingPlaceId = place['placeId']);
     try {
-      final response = await FirebaseFunctions.instance.httpsCallable('redeemReward').call({
+      final response = await cloudFunctions.httpsCallable('redeemReward').call({
         'rewardId': widget.reward.catalogId,
         'placeId': place['placeId'],
         'requestId': requestId,

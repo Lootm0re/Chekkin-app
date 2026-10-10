@@ -70,4 +70,8 @@ async function main() {
   process.exitCode = 1;
 }
 
-main().catch((err) => { console.error(err.message); process.exit(1); });
+module.exports = { CATALOG };
+
+if (require.main === module) {
+  main().catch((err) => { console.error(err.message); process.exit(1); });
+}

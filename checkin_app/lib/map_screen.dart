@@ -7,6 +7,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 
 import 'app_only.dart';
 import 'check_in_place.dart';
+import 'emulators.dart';
 import 'group_check_in.dart';
 import 'location_access.dart';
 import 'pin_icons.dart';
@@ -59,7 +60,7 @@ class _MapScreenState extends State<MapScreen> {
   // A group check-in the user started or joined, shown until dismissed.
   String? activeGroupId;
   final TextEditingController codeController = TextEditingController();
-  final FirebaseFunctions functions = FirebaseFunctions.instance;
+  final FirebaseFunctions functions = cloudFunctions;
 
   static const double checkInRangeMeters = 22;
   static const int codeLength = 6; // keep in sync with BUSINESS_CODE_DIGITS
