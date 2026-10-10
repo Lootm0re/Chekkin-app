@@ -18,6 +18,9 @@ class AppColors {
   /// Selected backgrounds (the tab pill, chips).
   static const Color lightPurple = Color(0xFFEDE8FF);
 
+  /// Success backgrounds (an accepted voucher, a used code).
+  static const Color lightMint = Color(0xFFD6F5EC);
+
   /// Map pins for businesses that aren't partners (no check-in).
   static const Color inactive = Color(0xFFB8B4CC);
 
@@ -104,6 +107,8 @@ class AppTheme {
       textTheme: text,
       iconTheme: const IconThemeData(color: AppColors.ink),
       materialTapTargetSize: MaterialTapTargetSize.padded,
+      // Pointer hover (web, iPad with a trackpad): a light purple tint, not grey.
+      hoverColor: AppColors.lightPurple.withValues(alpha: 0.5),
       appBarTheme: AppBarTheme(
         backgroundColor: AppColors.background,
         foregroundColor: AppColors.ink,
@@ -191,6 +196,7 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.card,
+        hoverColor: Colors.transparent,
         labelStyle: AppText.body(size: 16, color: AppColors.muted),
         hintStyle: AppText.body(size: 16, color: AppColors.muted),
         errorStyle: AppText.body(size: 14, color: AppColors.error),

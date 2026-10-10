@@ -9,6 +9,7 @@ import 'app_only.dart';
 import 'check_in_place.dart';
 import 'emulators.dart';
 import 'location_access.dart';
+import 'theme.dart';
 
 /// For restaurant, café, hotel and shop owners: register a place, and once
 /// it's a partner, show customers the current check-in code.
@@ -21,62 +22,174 @@ class BusinessScreen extends StatelessWidget {
 
     if (!appOnlyFeaturesAvailable) {
       return Scaffold(
-        appBar: AppBar(title: const Text('My Business')),
-        body: const Center(
-          child: Padding(padding: EdgeInsets.all(24), child: Text(appOnlyMessage, textAlign: TextAlign.center)),
+        body: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            const _MintHeader(),
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(appOnlyMessage, textAlign: TextAlign.center, style: AppText.body(size: 16)),
+            ),
+          ],
         ),
       );
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('My Business')),
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance.collection('businesses').where('ownerUid', isEqualTo: uid).snapshots(),
         builder: (context, snapshot) {
+          Widget content;
           if (snapshot.hasError) {
             debugPrint('Loading businesses failed: ${snapshot.error}');
-            return const Center(child: Text('Couldn\'t load your businesses. Please try again later.'));
-          }
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          var docs = snapshot.data!.docs;
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (docs.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 16),
-                  child: Text(
-                    'Run a restaurant, café, hotel or shop? Register it, and once it\'s a partner, customers '
-                    'enter the code shown here when they check in. Each code works for one customer, who can bring '
-                    'friends along as a group.',
-                  ),
-                ),
-              for (var doc in docs) _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
-              if (docs.any((doc) => (doc.data() as Map)['status'] == 'approved'))
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.confirmation_number),
-                    label: const Text('Verify voucher'),
+            content = Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'Couldn\'t load your businesses. Please try again later.',
+                textAlign: TextAlign.center,
+                style: AppText.body(size: 16),
+              ),
+            );
+          } else if (!snapshot.hasData) {
+            content = const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator()));
+          } else {
+            var docs = snapshot.data!.docs;
+            content = Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (docs.isEmpty)
+                    Card(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Text(
+                          'Run a restaurant, café, hotel or shop? Register it, and once it\'s a partner, customers '
+                          'enter the code shown here when they check in. Each code works for one customer, who can '
+                          'bring friends along as a group.',
+                          style: AppText.body(size: 16),
+                        ),
+                      ),
+                    ),
+                  if (docs.any((doc) => (doc.data() as Map)['status'] == 'approved'))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _VerifyVoucherCard(
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const _VerifyVoucherScreen()),
+                        ),
+                      ),
+                    ),
+                  for (var doc in docs) _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.add_business_rounded),
+                    label: const Text('Register a place'),
                     onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const _VerifyVoucherScreen()),
+                      MaterialPageRoute(builder: (_) => const _RegisterBusinessScreen()),
                     ),
                   ),
-                ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.add_business),
-                label: const Text('Register a place'),
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const _RegisterBusinessScreen()),
-                ),
+                ],
               ),
-            ],
+            );
+          }
+          return ListView(
+            padding: EdgeInsets.zero,
+            children: [const _MintHeader(), content],
           );
         },
+      ),
+    );
+  }
+}
+
+/// Mint header with decorative circles, a back button and the title.
+class _MintHeader extends StatelessWidget {
+  const _MintHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    double top = MediaQuery.of(context).padding.top;
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(40)),
+      child: Container(
+        color: AppColors.mint,
+        child: Stack(
+          children: [
+            const Positioned(right: -40, top: -50, child: DecorCircle(size: 170, color: AppColors.yellow)),
+            Positioned(left: -50, bottom: -70, child: DecorCircle(size: 160, color: Colors.white.withValues(alpha: 0.25))),
+            const Positioned(right: 36, bottom: 14, child: DecorCircle(size: 24, color: AppColors.coral)),
+            Padding(
+              padding: EdgeInsets.fromLTRB(8, top + 8, 20, 30),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (Navigator.of(context).canPop())
+                    IconButton(
+                      tooltip: 'Back',
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      onPressed: () => Navigator.of(context).maybePop(),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('My Business', style: AppText.heading(size: 30)),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Check-in codes, vouchers and stats for your places.',
+                          style: AppText.body(size: 16, weight: FontWeight.w700),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Opens Verify voucher.
+class _VerifyVoucherCard extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _VerifyVoucherCard({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              const IconSquare(color: AppColors.yellow, icon: Icons.confirmation_number_rounded, size: 52),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Verify voucher', style: AppText.heading(size: 19)),
+                    Text(
+                      'Enter the code from a customer\'s reward voucher.',
+                      style: AppText.body(size: 14, color: AppColors.muted),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded, color: AppColors.purple),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -93,41 +206,75 @@ class _BusinessCard extends StatelessWidget {
     PlaceCategory category = PlaceCategory.fromName(data['category']);
     String status = data['status'] ?? 'pending';
 
+    String? tier = tierLabels[data['tier']];
+    bool partner = status == 'approved' && tier != null;
+    TextStyle note = AppText.body(size: 15, color: AppColors.muted);
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
-                Icon(Icons.location_on, color: category.color),
-                const SizedBox(width: 8),
+                IconSquare(color: category.color, icon: category.icon, size: 52),
+                const SizedBox(width: 14),
                 Expanded(
-                  child: Text(data['placeName'] ?? 'Unnamed place', style: Theme.of(context).textTheme.titleMedium),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(data['placeName'] ?? 'Unnamed place', style: AppText.heading(size: 20)),
+                      Text(category.label, style: AppText.body(size: 15, color: AppColors.muted)),
+                    ],
+                  ),
                 ),
-                Text(category.label, style: TextStyle(color: Colors.grey[600])),
               ],
             ),
             const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (partner)
+                  ColorChip(label: '$tier plan', color: AppColors.yellow, icon: Icons.workspace_premium_rounded)
+                else
+                  switch (status) {
+                    'approved' => const ColorChip(
+                        label: 'Approved',
+                        color: AppColors.lightPurple,
+                        icon: Icons.check_rounded,
+                      ),
+                    'rejected' => const ColorChip(label: 'Not approved', color: AppColors.coral, icon: Icons.close_rounded),
+                    _ => const ColorChip(
+                        label: 'Waiting for approval',
+                        color: AppColors.lightPurple,
+                        icon: Icons.hourglass_top_rounded,
+                      ),
+                  },
+              ],
+            ),
+            const SizedBox(height: 16),
             switch (status) {
-              'approved' when tierLabels.containsKey(data['tier']) => Column(
+              'approved' when partner => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _BusinessCode(placeId: placeId, codeSeq: data['codeSeq']),
-                    const Divider(height: 32),
+                    const Divider(height: 36),
                     _BusinessStats(placeId: placeId, codeSeq: data['codeSeq']),
                   ],
                 ),
               'approved' => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text('Approved, but not a partner yet. Customers can\'t check in here until you are.'),
-                    const Divider(height: 32),
+                    Text('Approved, but not a partner yet. Customers can\'t check in here until you are.', style: note),
+                    const Divider(height: 36),
                     _BusinessStats(placeId: placeId, codeSeq: data['codeSeq']),
                   ],
                 ),
-              'rejected' => const Text('This registration wasn\'t approved.'),
-              _ => const Text('Waiting for approval.'),
+              'rejected' => Text('This registration wasn\'t approved.', style: note),
+              _ => Text('Waiting for approval.', style: note),
             },
           ],
         ),
@@ -250,7 +397,7 @@ class _BusinessCodeState extends State<_BusinessCode> {
       if (error != null) {
         return Row(
           children: [
-            Expanded(child: Text(error!)),
+            Expanded(child: Text(error!, style: AppText.body(size: 15))),
             TextButton(onPressed: _loadCode, child: const Text('Retry')),
           ],
         );
@@ -262,33 +409,66 @@ class _BusinessCodeState extends State<_BusinessCode> {
     if (left.isNegative) left = Duration.zero;
     String countdown = '${left.inMinutes}:${(left.inSeconds % 60).toString().padLeft(2, '0')}';
 
-    return Column(
-      children: [
-        const Text('Check-in code for the next customer'),
-        const SizedBox(height: 4),
-        Text(
-          '${code!.substring(0, 3)} ${code!.substring(3)}',
-          style: Theme.of(context).textTheme.displayMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-                letterSpacing: 4,
-                fontFeatures: const [FontFeature.tabularFigures()],
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+      decoration: BoxDecoration(
+        color: AppColors.lightPurple,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        children: [
+          Text('Check-in code for the next customer', style: AppText.body(size: 15, weight: FontWeight.w800)),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.card,
+              borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+            ),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                '${code!.substring(0, 3)} ${code!.substring(3)}',
+                style: AppText.heading(size: 52).copyWith(
+                  letterSpacing: 6,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
               ),
-        ),
-        Text('Works once. Expires in $countdown if unused.', style: TextStyle(color: Colors.grey[600])),
-        if (notice != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(notice!, style: TextStyle(color: Colors.green[800], fontWeight: FontWeight.w500)),
+            ),
           ),
-        const SizedBox(height: 8),
-        TextButton.icon(
-          onPressed: isRetiring ? null : _retire,
-          icon: isRetiring
-              ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.refresh),
-          label: const Text('New code'),
-        ),
-      ],
+          const SizedBox(height: 10),
+          Text(
+            'Works once. Expires in $countdown if unused.',
+            style: AppText.body(size: 14, color: AppColors.muted),
+            textAlign: TextAlign.center,
+          ),
+          if (notice != null)
+            Container(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.lightMint,
+                borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_rounded, color: AppColors.ink, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(notice!, style: AppText.body(size: 15, weight: FontWeight.w700))),
+                ],
+              ),
+            ),
+          const SizedBox(height: 4),
+          TextButton.icon(
+            onPressed: isRetiring ? null : _retire,
+            icon: isRetiring
+                ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded),
+            label: const Text('New code'),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -353,8 +533,8 @@ class _BusinessStatsState extends State<_BusinessStats> {
     Widget body;
     if (stats == null) {
       body = error != null
-          ? Text(error!)
-          : const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator());
+          ? Text(error!, style: AppText.body(size: 15))
+          : const Padding(padding: EdgeInsets.all(8), child: Center(child: CircularProgressIndicator()));
     } else {
       num? average = stats!['averageGroupSize'];
       String? tier = stats!['tierLabel'];
@@ -365,19 +545,42 @@ class _BusinessStatsState extends State<_BusinessStats> {
           : '$used of $budget full-point check-ins used this month; after that, customers earn 5 points '
               'until next month.';
       body = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (tier != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                '$tier partner: ${stats!['tierPoints']} points a check-in. $budgetText',
-                textAlign: TextAlign.center,
+          if (tier != null) ...[
+            Text(
+              '$tier partner: ${stats!['tierPoints']} points a check-in.',
+              style: AppText.body(size: 15, weight: FontWeight.w800),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Text('Monthly budget', style: AppText.body(size: 14, color: AppColors.muted)),
+                const Spacer(),
+                Text(budget == null ? '$used · unlimited' : '$used / $budget', style: AppText.heading(size: 16)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: budget == null ? 1 : (used / budget).clamp(0, 1).toDouble(),
+                minHeight: 14,
+                color: budget == null ? AppColors.mint : AppColors.yellow,
+                backgroundColor: AppColors.lightPurple,
               ),
             ),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
+            const SizedBox(height: 6),
+            Text(budgetText, style: AppText.body(size: 14, color: AppColors.muted)),
+            const SizedBox(height: 16),
+          ],
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 1.9,
             children: [
               _Stat(label: 'Today', value: '${stats!['today']}'),
               _Stat(label: 'Last 7 days', value: '${stats!['week']}'),
@@ -391,14 +594,14 @@ class _BusinessStatsState extends State<_BusinessStats> {
     }
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           children: [
-            Text('Check-ins', style: Theme.of(context).textTheme.titleSmall),
-            const Spacer(),
+            Expanded(child: Text('Check-ins', style: AppText.heading(size: 19))),
             IconButton(
               tooltip: 'Refresh',
-              icon: const Icon(Icons.refresh, size: 20),
+              icon: const Icon(Icons.refresh_rounded),
               onPressed: isLoading ? null : _load,
             ),
           ],
@@ -418,16 +621,17 @@ class _Stat extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 100,
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(value, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-          Text(label, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center),
+          FittedBox(fit: BoxFit.scaleDown, child: Text(value, style: AppText.heading(size: 26))),
+          Text(label, style: AppText.body(size: 14, color: AppColors.muted), maxLines: 1, overflow: TextOverflow.ellipsis),
         ],
       ),
     );
@@ -487,33 +691,58 @@ class _VerifyVoucherScreenState extends State<_VerifyVoucherScreen> {
 
   @override
   Widget build(BuildContext context) {
-    TextTheme text = Theme.of(context).textTheme;
     Widget body;
     if (accepted != null) {
-      body = Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.check_circle, color: Colors.green[700], size: 64),
-          const SizedBox(height: 8),
-          Text('${accepted!['discountPercent']}% off', style: text.displaySmall?.copyWith(fontWeight: FontWeight.bold)),
-          Text('${accepted!['rewardName'] ?? 'Voucher'} at ${accepted!['placeName']}', textAlign: TextAlign.center),
-          const SizedBox(height: 16),
-          Text('@${accepted!['username']}', style: text.headlineSmall),
-          const SizedBox(height: 8),
-          const Text(
-            'The voucher is now used. Check the username and the ticking clock on the customer\'s screen.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton(onPressed: _reset, child: const Text('Check another voucher')),
-        ],
+      // Accepted: a light mint card with the discount and the customer.
+      body = Container(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+        decoration: BoxDecoration(
+          color: AppColors.lightMint,
+          borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const IconSquare(color: AppColors.mint, icon: Icons.check_rounded, size: 72),
+            const SizedBox(height: 12),
+            Text('${accepted!['discountPercent']}% off', style: AppText.heading(size: 48)),
+            Text(
+              '${accepted!['rewardName'] ?? 'Voucher'} at ${accepted!['placeName']}',
+              textAlign: TextAlign.center,
+              style: AppText.body(size: 16, weight: FontWeight.w700),
+            ),
+            const SizedBox(height: 16),
+            ColorChip(label: '@${accepted!['username']}', color: AppColors.card, icon: Icons.person_rounded),
+            const SizedBox(height: 14),
+            Text(
+              'The voucher is now used. Check the username and the ticking clock on the customer\'s screen.',
+              textAlign: TextAlign.center,
+              style: AppText.body(size: 15),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _reset,
+              style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, AppShapes.buttonHeight)),
+              child: const Text('Check another voucher'),
+            ),
+          ],
+        ),
       );
     } else {
       body = Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Enter the 8-character code from the customer\'s voucher screen.', textAlign: TextAlign.center),
+          const Center(child: IconSquare(color: AppColors.yellow, icon: Icons.confirmation_number_rounded, size: 80)),
           const SizedBox(height: 16),
+          Text('Enter the voucher code', textAlign: TextAlign.center, style: AppText.heading(size: 24)),
+          const SizedBox(height: 6),
+          Text(
+            'Enter the 8-character code from the customer\'s voucher screen.',
+            textAlign: TextAlign.center,
+            style: AppText.body(size: 16, color: AppColors.muted),
+          ),
+          const SizedBox(height: 20),
           TextField(
             controller: codeController,
             autofocus: true,
@@ -522,16 +751,23 @@ class _VerifyVoucherScreenState extends State<_VerifyVoucherScreen> {
             autocorrect: false,
             enableSuggestions: false,
             maxLength: 9, // with a space or dash in the middle
-            style: text.headlineMedium?.copyWith(letterSpacing: 4),
-            decoration: InputDecoration(border: const OutlineInputBorder(), errorText: error, errorMaxLines: 3),
+            style: AppText.heading(size: 34).copyWith(letterSpacing: 6),
+            decoration: InputDecoration(
+              hintText: 'ABCD EFGH',
+              hintStyle: AppText.heading(size: 34, color: AppColors.lightPurple).copyWith(letterSpacing: 6),
+              errorText: error,
+              errorMaxLines: 3,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+            ),
             onSubmitted: (_) => _verify(),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           ElevatedButton(
             onPressed: isVerifying ? null : _verify,
+            style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 60)),
             child: isVerifying
-                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('Verify and use'),
+                ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
+                : const Text('Verify and use', style: TextStyle(fontSize: 19)),
           ),
         ],
       );
@@ -539,7 +775,12 @@ class _VerifyVoucherScreenState extends State<_VerifyVoucherScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Verify Voucher')),
-      body: Center(child: SingleChildScrollView(padding: const EdgeInsets.all(24), child: body)),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 480), child: body),
+        ),
+      ),
     );
   }
 }
@@ -570,12 +811,14 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
     });
     try {
       final position = await getPositionWithPermission();
-      final response = await cloudFunctions.httpsCallable('nearbyPlaces').call({
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-      });
+      List data = useEmulators
+          ? emulatorNearbyPlaces(position.latitude, position.longitude)
+          : (await cloudFunctions.httpsCallable('nearbyPlaces').call({
+              'latitude': position.latitude,
+              'longitude': position.longitude,
+            }))
+              .data['places'];
       if (!mounted) return;
-      List data = response.data['places'];
       setState(() {
         places = data.map((p) => CheckInPlace.fromMap(p)).where((p) => p.category.isBusiness).toList();
       });
@@ -628,47 +871,42 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
   Widget build(BuildContext context) {
     Widget body;
     if (error != null) {
-      body = Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              ElevatedButton(onPressed: _loadPlaces, child: const Text('Try Again')),
-            ],
-          ),
-        ),
+      body = _CenteredMessage(
+        icon: Icons.location_searching_rounded,
+        text: error!,
+        action: ElevatedButton(onPressed: _loadPlaces, child: const Text('Try Again')),
       );
     } else if (places == null) {
       body = const Center(child: CircularProgressIndicator());
     } else if (places!.isEmpty) {
-      body = const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'No restaurants, cafés, hotels or shops found near you. Open this screen at your business.',
-            textAlign: TextAlign.center,
-          ),
-        ),
+      body = const _CenteredMessage(
+        icon: Icons.storefront_rounded,
+        text: 'No restaurants, cafés, hotels or shops found near you. Open this screen at your business.',
       );
     } else {
       body = ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text('Restaurants, cafés, hotels and shops near you:'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 4, 8),
+            child: Text(
+              'Restaurants, cafés, hotels and shops near you:',
+              style: AppText.body(size: 16, weight: FontWeight.w700),
+            ),
           ),
           for (var place in places!)
-            ListTile(
-              leading: Icon(Icons.location_on, color: place.category.color),
-              title: Text(place.name),
-              subtitle: Text(place.category.label),
-              trailing: submittingPlaceId == place.id
-                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                  : null,
-              onTap: submittingPlaceId == null ? () => _register(place) : null,
+            Card(
+              child: ListTile(
+                contentPadding: const EdgeInsets.fromLTRB(14, 8, 16, 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppShapes.cardRadius)),
+                leading: IconSquare(color: place.category.color, icon: place.category.icon, size: 44),
+                title: Text(place.name, style: AppText.heading(size: 18)),
+                subtitle: Text(place.category.label),
+                trailing: submittingPlaceId == place.id
+                    ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
+                    : const Icon(Icons.add_circle_rounded, color: AppColors.purple),
+                onTap: submittingPlaceId == null ? () => _register(place) : null,
+              ),
             ),
         ],
       );
@@ -677,6 +915,33 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Register a Place')),
       body: body,
+    );
+  }
+}
+
+/// An icon square with a message and an optional button.
+class _CenteredMessage extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Widget? action;
+
+  const _CenteredMessage({required this.icon, required this.text, this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconSquare(color: AppColors.lightPurple, icon: icon, size: 80),
+            const SizedBox(height: 16),
+            Text(text, textAlign: TextAlign.center, style: AppText.body(size: 16)),
+            if (action != null) ...[const SizedBox(height: 20), action!],
+          ],
+        ),
+      ),
     );
   }
 }
