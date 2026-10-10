@@ -1,7 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+
+import 'theme.dart';
 import 'user_avatar.dart';
+
+/// The top 100 by points ever earned, so spending points on rewards doesn't
+/// cost a place. Other users' private details live in users/{uid};
+/// publicProfiles only holds what's shown here.
+Stream<QuerySnapshot> leaderboardStream() => FirebaseFirestore.instance
+    .collection('publicProfiles')
+    .orderBy('lifetimePoints', descending: true)
+    .limit(100)
+    .snapshots();
 
 class LeaderboardScreen extends StatelessWidget {
   const LeaderboardScreen({super.key});
@@ -13,23 +24,17 @@ class LeaderboardScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Leaderboard')),
       body: StreamBuilder<QuerySnapshot>(
-        // Other users' private details live in users/{uid}; publicProfiles
-        // only holds what's shown here. Ranked by points ever earned, so
-        // spending points on rewards doesn't cost a place.
-        stream: FirebaseFirestore.instance
-            .collection('publicProfiles')
-            .orderBy('lifetimePoints', descending: true)
-            .limit(100)
-            .snapshots(),
+        stream: leaderboardStream(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             debugPrint('Leaderboard failed: ${snapshot.error}');
-            return const Center(
+            return Center(
               child: Padding(
-                padding: EdgeInsets.all(24),
+                padding: const EdgeInsets.all(24),
                 child: Text(
                   'Couldn\'t load the leaderboard. Please try again later.',
                   textAlign: TextAlign.center,
+                  style: AppText.body(size: 16),
                 ),
               ),
             );
@@ -41,51 +46,82 @@ class LeaderboardScreen extends StatelessWidget {
           var docs = snapshot.data!.docs;
 
           return ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
             itemCount: docs.length,
-            itemBuilder: (context, index) {
-              var data = docs[index].data() as Map<String, dynamic>;
-              bool isCurrentUser = docs[index].id == currentUserId;
-              int rank = index + 1;
-
-              return Container(
-                color: isCurrentUser ? Colors.blue.withOpacity(0.1) : null,
-                child: ListTile(
-                  leading: SizedBox(
-                    width: 60,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          '#$rank',
-                          style: TextStyle(
-                            fontWeight: rank <= 3 ? FontWeight.bold : FontWeight.normal,
-                            color: rank == 1
-                                ? Colors.amber[700]
-                                : rank == 2
-                                    ? Colors.grey[600]
-                                    : rank == 3
-                                        ? Colors.brown[400]
-                                        : null,
-                          ),
-                        ),
-                        UserAvatar(data: data, radius: 18),
-                      ],
-                    ),
-                  ),
-                  title: Text(
-                    data['name'] ?? 'Unknown',
-                    style: TextStyle(fontWeight: isCurrentUser ? FontWeight.bold : FontWeight.normal),
-                  ),
-                  subtitle: Text('@${data['username'] ?? ''}'),
-                  trailing: Text(
-                    '${data['lifetimePoints'] ?? 0} pts',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-              );
-            },
+            itemBuilder: (context, index) => LeaderboardRow(
+              rank: index + 1,
+              data: docs[index].data() as Map<String, dynamic>,
+              isCurrentUser: docs[index].id == currentUserId,
+            ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// One leaderboard entry: a rank circle, picture, name, username and points.
+/// The current user's row has a purple border.
+class LeaderboardRow extends StatelessWidget {
+  final int rank;
+  final Map<String, dynamic> data;
+  final bool isCurrentUser;
+
+  const LeaderboardRow({super.key, required this.rank, required this.data, required this.isCurrentUser});
+
+  /// Gold, silver and bronze in the app's colours, then light purple.
+  static Color rankColor(int rank) => switch (rank) {
+    1 => AppColors.yellow,
+    2 => AppColors.sky,
+    3 => AppColors.coral,
+    _ => AppColors.lightPurple,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+        border: Border.all(color: isCurrentUser ? AppColors.purple : Colors.transparent, width: 2.5),
+        boxShadow: AppShapes.softShadow,
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: rankColor(rank), shape: BoxShape.circle),
+            child: Text('$rank', style: AppText.heading(size: rank < 100 ? 18 : 15)),
+          ),
+          const SizedBox(width: 12),
+          UserAvatar(data: data, radius: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  data['name'] ?? 'Unknown',
+                  style: AppText.body(size: 16, weight: FontWeight.w800),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  '@${data['username'] ?? ''}',
+                  style: AppText.body(size: 14, color: AppColors.muted),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text('${data['lifetimePoints'] ?? 0}', style: AppText.heading(size: 18)),
+          const SizedBox(width: 4),
+          Text('pts', style: AppText.body(size: 14, color: AppColors.muted)),
+        ],
       ),
     );
   }

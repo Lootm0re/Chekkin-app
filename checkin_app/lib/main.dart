@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,19 +5,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
 import 'app_only.dart';
-import 'dev_app_check_screen.dart';
 import 'emulators.dart';
 import 'auth_screen.dart';
 import 'map_screen.dart';
 import 'rewards_screen.dart';
 import 'phone_verify_screen.dart';
+import 'profile_screen.dart';
 import 'leaderboard_screen.dart';
-import 'profile_picture.dart';
 import 'theme.dart';
-import 'business_screen.dart';
-import 'friends_screen.dart';
-import 'avatar_editor_screen.dart';
-import 'user_avatar.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -159,7 +153,7 @@ class _HomeScreenState extends State<HomeScreen> {
       MapScreen(userPoints: userPoints),
       RewardsScreen(userPoints: userPoints),
       const LeaderboardScreen(),
-      const ProfileScreen(),
+      ProfileScreen(onOpenRanks: () => setState(() => currentTab = 2)),
     ];
 
     return Scaffold(
@@ -184,147 +178,6 @@ class _HomeScreenState extends State<HomeScreen> {
           AppTab(icon: Icons.emoji_events_outlined, selectedIcon: Icons.emoji_events_rounded, label: 'Ranks'),
           AppTab(icon: Icons.person_outline_rounded, selectedIcon: Icons.person_rounded, label: 'Profile'),
         ],
-      ),
-    );
-  }
-}
-
-class ProfileScreen extends StatelessWidget {
-  const ProfileScreen({super.key});
-
-  Future<void> _uploadPhoto(BuildContext context) async {
-    try {
-      await ProfilePictureUploader().pickAndUploadPhoto();
-    } catch (e) {
-      debugPrint('Uploading photo failed: $e');
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Couldn\'t upload your photo. Please try again.')),
-      );
-    }
-  }
-
-  Future<void> _updateProfile(BuildContext context, Map<String, Object> fields) async {
-    try {
-      String uid = FirebaseAuth.instance.currentUser!.uid;
-      await FirebaseFirestore.instance.collection('users').doc(uid).update(fields);
-    } catch (e) {
-      debugPrint('Updating profile failed: $e');
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Couldn\'t save that change. Please try again.')),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Profile')),
-      body: StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-
-          var data = snapshot.data!.data() as Map<String, dynamic>;
-          bool hasAvatar = data['avatar'] is Map;
-          String? photoUrl = data['profilePictureUrl'];
-          bool hasPhoto = photoUrl != null && photoUrl.isNotEmpty;
-          bool hidden = data['avatarHidden'] == true;
-
-          // A ListView so the profile scrolls on small screens.
-          return ListView(
-            padding: const EdgeInsets.all(24),
-            children: [
-              Center(child: UserAvatar(data: data, radius: 50)),
-              const SizedBox(height: 12),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.face),
-                    label: Text(hasAvatar ? 'Edit avatar' : 'Create avatar'),
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => AvatarEditorScreen(currentAvatar: data['avatar'])),
-                    ),
-                  ),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.photo),
-                    label: Text(hasPhoto ? 'Change photo' : 'Upload photo'),
-                    onPressed: () => _uploadPhoto(context),
-                  ),
-                ],
-              ),
-              if (hasAvatar && hasPhoto) ...[
-                const SizedBox(height: 12),
-                Center(
-                  child: SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'avatar', label: Text('Show avatar'), icon: Icon(Icons.face)),
-                      ButtonSegment(value: 'photo', label: Text('Show photo'), icon: Icon(Icons.photo)),
-                    ],
-                    // Same rule as UserAvatar: the photo, unless the avatar was chosen.
-                    selected: {data['profileImage'] == 'avatar' ? 'avatar' : 'photo'},
-                    onSelectionChanged: (choice) => _updateProfile(context, {'profileImage': choice.first}),
-                  ),
-                ),
-              ],
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Show my picture to other users'),
-                subtitle: Text(hidden ? 'Others see a default icon.' : 'Shown on the leaderboard.'),
-                value: !hidden,
-                onChanged: (show) => _updateProfile(context, {'avatarHidden': !show}),
-              ),
-              const SizedBox(height: 16),
-              Text('Name: ${data['name']}', style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 8),
-              Text('Username: @${data['username']}', style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 8),
-              Text('Points to spend: ${data['points']}', style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 8),
-              Text(
-                'Points earned in total: ${data['lifetimePoints'] ?? data['points']}',
-                style: const TextStyle(fontSize: 18),
-              ),
-              const SizedBox(height: 24),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.people),
-                label: const Text('Friends'),
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const FriendsScreen()),
-                ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.storefront),
-                label: const Text('My Business'),
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const BusinessScreen()),
-                ),
-              ),
-              if (devTools && !kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.verified_user),
-                  label: const Text('DEV: App Check code'),
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const DevAppCheckScreen()),
-                  ),
-                ),
-              ],
-              const SizedBox(height: 12),
-              ElevatedButton(
-                onPressed: () => FirebaseAuth.instance.signOut(),
-                child: const Text('Log Out'),
-              ),
-            ],
-          );
-        },
       ),
     );
   }
