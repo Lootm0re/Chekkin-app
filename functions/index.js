@@ -606,12 +606,48 @@ function recentGroupmates(lastCheckInDoc, others) {
   });
 }
 
+// Each nearbyPlaces call is a paid Places API search, and results can't be
+// cached (see above), so each user except dev testers gets at most this many,
+// counted in placesQuota/{uid}. Hours and days follow TIME_ZONE.
+const NEARBY_PLACES_PER_HOUR = 20;
+const NEARBY_PLACES_PER_DAY = 100;
+
+/** Counts a nearbyPlaces call for [uid], or throws if they've used up their searches. */
+async function useNearbyPlacesQuota(db, uid) {
+  const ref = db.collection('placesQuota').doc(uid);
+  const now = Date.now();
+  const day = dayKey(now);
+  const hour = `${day}T${hourOfDay(now)}`;
+  await db.runTransaction(async (tx) => {
+    const doc = await tx.get(ref);
+    const hourCount = doc.get('hour') === hour ? doc.get('hourCount') ?? 0 : 0;
+    const dayCount = doc.get('day') === day ? doc.get('dayCount') ?? 0 : 0;
+    if (dayCount >= NEARBY_PLACES_PER_DAY) {
+      throw new HttpsError('resource-exhausted', 'You\'ve refreshed the map a lot today. Please try again tomorrow.');
+    }
+    if (hourCount >= NEARBY_PLACES_PER_HOUR) {
+      throw new HttpsError('resource-exhausted', 'You\'ve refreshed the map a lot. Please try again in a while.');
+    }
+    tx.set(ref, { hour, hourCount: hourCount + 1, day, dayCount: dayCount + 1 });
+  });
+}
+
+/** 'HH' in TIME_ZONE. */
+function hourOfDay(ms) {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, hour: '2-digit', hourCycle: 'h23' })
+    .format(new Date(ms));
+}
+
 /** Returns check-in eligible places near the given position. */
 exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Sign in to see places.');
   }
   const { lat, lng } = readCoordinates(request.data, 'latitude', 'longitude');
+  // Dev testers teleport around a lot, so they have no limit.
+  if (!await isDevTester(getFirestore(), request.auth.uid)) {
+    await useNearbyPlacesQuota(getFirestore(), request.auth.uid);
+  }
 
   const data = await placesRequest('places:searchNearby', {
     method: 'POST',

@@ -146,7 +146,18 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
 
     return Scaffold(
-      body: screens[currentTab],
+      // The map stays alive on other tabs, so coming back to it doesn't look
+      // up places again (each lookup is a paid Places API search). Its
+      // refresh button reloads them. The other tabs are rebuilt as before.
+      body: Stack(
+        children: [
+          Offstage(
+            offstage: currentTab != 0,
+            child: TickerMode(enabled: currentTab == 0, child: screens[0]),
+          ),
+          if (currentTab != 0) screens[currentTab],
+        ],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: currentTab,
         onTap: (index) => setState(() => currentTab = index),
