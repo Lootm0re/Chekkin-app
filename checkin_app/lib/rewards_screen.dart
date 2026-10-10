@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import 'check_in_place.dart';
+import 'theme.dart';
 import 'vouchers.dart';
 
 class Reward {
@@ -14,22 +16,32 @@ class Reward {
   /// rewards/{catalogId}, for rewards that can be redeemed.
   final String? catalogId;
 
+  /// The card's icon square.
+  final Color color;
+  final IconData icon;
+
   Reward({
     required this.name,
     required this.pointsRequired,
     required this.description,
     this.comingSoon = false,
     this.catalogId,
+    this.color = AppColors.purple,
+    this.icon = Icons.card_giftcard_rounded,
   });
 
-  /// A partner discount from the catalog (functions/scripts/rewards-catalog.js).
+  /// A partner discount from the catalog (functions/scripts/rewards-catalog.js),
+  /// in its place category's colour.
   factory Reward.fromCatalog(DocumentSnapshot doc) {
     var data = doc.data() as Map<String, dynamic>;
+    PlaceCategory? category = data['category'] == null ? null : PlaceCategory.fromName(data['category']);
     return Reward(
       name: data['name'] ?? 'Reward',
       pointsRequired: (data['pointsCost'] as num).toInt(),
       description: data['description'] ?? '${data['discountPercent']}% off at a partner place',
       catalogId: doc.id,
+      color: category?.color ?? AppColors.coral,
+      icon: category?.icon ?? Icons.local_offer_rounded,
     );
   }
 }
@@ -43,14 +55,37 @@ const bool redeemingOpen = true;
 // The partner discounts (Restaurant Discount, 5000 points) come from the
 // catalog in Firestore instead.
 final List<Reward> comingSoonRewards = [
-  Reward(name: 'Coffee Voucher', pointsRequired: 500, description: 'Free coffee at a partner cafe', comingSoon: true),
-  Reward(name: 'Museum Pass', pointsRequired: 1500, description: 'Free entry to a partner museum', comingSoon: true),
-  Reward(name: 'Weekend Getaway', pointsRequired: 20000, description: 'A free weekend stay', comingSoon: true),
+  Reward(
+    name: 'Coffee Voucher',
+    pointsRequired: 500,
+    description: 'Free coffee at a partner cafe',
+    comingSoon: true,
+    color: AppColors.mint,
+    icon: Icons.local_cafe_rounded,
+  ),
+  Reward(
+    name: 'Museum Pass',
+    pointsRequired: 1500,
+    description: 'Free entry to a partner museum',
+    comingSoon: true,
+    color: AppColors.sky,
+    icon: Icons.museum_rounded,
+  ),
+  Reward(
+    name: 'Weekend Getaway',
+    pointsRequired: 20000,
+    description: 'A free weekend stay',
+    comingSoon: true,
+    color: AppColors.purple,
+    icon: Icons.hotel_rounded,
+  ),
   Reward(
     name: 'Free Flight Ticket',
     pointsRequired: 40000,
     description: 'A free ticket to anywhere on our partner airline',
     comingSoon: true,
+    color: AppColors.yellow,
+    icon: Icons.flight_rounded,
   ),
 ];
 
@@ -75,7 +110,7 @@ class RewardsScreen extends StatelessWidget {
         title: const Text('Your Points'),
         actions: [
           TextButton.icon(
-            icon: const Icon(Icons.confirmation_number_outlined),
+            icon: const Icon(Icons.confirmation_number_rounded),
             label: const Text('My vouchers'),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const MyVouchersScreen()),
@@ -105,61 +140,19 @@ class RewardsScreen extends StatelessWidget {
     Reward? nextReward = _getNextReward(rewards);
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
       children: [
-        Center(
-          child: Column(
-            children: [
-              Text(
-                '$userPoints',
-                style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold),
-              ),
-              const Text('total points', style: TextStyle(fontSize: 16, color: Colors.grey)),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 16),
-
-        if (nextReward != null) ...[
-          Text('Next reward: ${nextReward.name}'),
-          const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: userPoints / nextReward.pointsRequired,
-            minHeight: 10,
-          ),
-          const SizedBox(height: 4),
-          Text('${nextReward.pointsRequired - userPoints} points to go'),
-        ],
-
+        _PointsCard(points: userPoints, nextReward: nextReward),
         const SizedBox(height: 24),
-        const Text('All Rewards', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        Text('All Rewards', style: AppText.heading(size: 22)),
         const SizedBox(height: 8),
         if (loading) const LinearProgressIndicator(),
-
-        ...rewards.map((reward) {
-          bool unlocked = !reward.comingSoon && userPoints >= reward.pointsRequired;
-
-          return Card(
-            child: ListTile(
-              leading: Icon(
-                reward.comingSoon ? Icons.schedule : (unlocked ? Icons.check_circle : Icons.lock_outline),
-                color: unlocked ? Colors.green : Colors.grey,
-              ),
-              title: Text(reward.name),
-              subtitle: Text('${reward.description}\n${reward.pointsRequired} points'),
-              isThreeLine: true,
-              trailing: reward.comingSoon
-                  ? const Chip(label: Text('Coming soon'), visualDensity: VisualDensity.compact)
-                  : unlocked
-                      ? ElevatedButton(
-                          onPressed: redeemingOpen ? () => _redeemReward(context, reward) : null,
-                          child: Text(redeemingOpen ? 'Redeem' : 'Coming soon'),
-                        )
-                      : null,
-            ),
-          );
-        }),
+        for (var reward in rewards)
+          _RewardCard(
+            reward: reward,
+            unlocked: !reward.comingSoon && userPoints >= reward.pointsRequired,
+            onRedeem: () => _redeemReward(context, reward),
+          ),
       ],
     );
   }
@@ -167,6 +160,125 @@ class RewardsScreen extends StatelessWidget {
   void _redeemReward(BuildContext context, Reward reward) {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => RedeemRewardScreen(reward: reward, userPoints: userPoints)),
+    );
+  }
+}
+
+/// Purple card with the points and progress to the next reward.
+class _PointsCard extends StatelessWidget {
+  final int points;
+  final Reward? nextReward;
+
+  const _PointsCard({required this.points, required this.nextReward});
+
+  @override
+  Widget build(BuildContext context) {
+    Reward? next = nextReward;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+      child: Container(
+        color: AppColors.purple,
+        child: Stack(
+          children: [
+            const Positioned(right: -36, top: -44, child: DecorCircle(size: 150, color: AppColors.coral)),
+            Positioned(right: 60, bottom: -50, child: DecorCircle(size: 110, color: Colors.white.withValues(alpha: 0.12))),
+            Padding(
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('total points', style: AppText.body(size: 15, weight: FontWeight.w700, color: Colors.white70)),
+                  Text('$points', style: AppText.heading(size: 52, color: Colors.white)),
+                  if (next != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Next reward: ${next.name}',
+                      style: AppText.body(size: 15, weight: FontWeight.w700, color: Colors.white),
+                    ),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: points / next.pointsRequired,
+                        minHeight: 14,
+                        color: AppColors.yellow,
+                        backgroundColor: Colors.white.withValues(alpha: 0.22),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${next.pointsRequired - points} points to go',
+                      style: AppText.body(size: 14, color: Colors.white70),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A reward: icon square, name, description, cost, and Redeem when it can
+/// be redeemed, Coming soon for rewards that aren't available yet.
+class _RewardCard extends StatelessWidget {
+  final Reward reward;
+  final bool unlocked;
+  final VoidCallback onRedeem;
+
+  const _RewardCard({required this.reward, required this.unlocked, required this.onRedeem});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget? action;
+    if (reward.comingSoon) {
+      action = const ColorChip(label: 'Coming soon', color: AppColors.lightPurple, icon: Icons.schedule_rounded);
+    } else if (unlocked) {
+      action = ElevatedButton(
+        onPressed: redeemingOpen ? onRedeem : null,
+        style: ElevatedButton.styleFrom(minimumSize: const Size(120, AppShapes.buttonHeight)),
+        child: Text(redeemingOpen ? 'Redeem' : 'Coming soon'),
+      );
+    } else {
+      action = const ColorChip(label: 'Locked', color: AppColors.lightPurple, icon: Icons.lock_rounded);
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                IconSquare(color: reward.color, icon: reward.icon),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(reward.name, style: AppText.heading(size: 19)),
+                      const SizedBox(height: 2),
+                      Text(reward.description, style: AppText.body(size: 15, color: AppColors.muted)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                ColorChip(label: '${reward.pointsRequired} pts', color: AppColors.yellow, icon: Icons.star_rounded),
+                const Spacer(),
+                action,
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

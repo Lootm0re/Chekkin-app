@@ -8,7 +8,9 @@ import 'package:flutter/material.dart';
 
 import 'app_only.dart';
 import 'emulators.dart';
+import 'check_in_place.dart';
 import 'rewards_screen.dart';
+import 'theme.dart';
 
 const String _redeemAppOnlyMessage = 'Redeeming rewards works in the Chekkin app for iPhone and Android.';
 
@@ -117,48 +119,58 @@ class _RedeemRewardScreenState extends State<RedeemRewardScreen> {
   Widget build(BuildContext context) {
     Widget body;
     if (!appOnlyFeaturesAvailable) {
-      body = const Center(
-        child: Padding(padding: EdgeInsets.all(24), child: Text(_redeemAppOnlyMessage, textAlign: TextAlign.center)),
-      );
+      body = const _Message(icon: Icons.phone_iphone_rounded, text: _redeemAppOnlyMessage);
     } else if (error != null) {
-      body = Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              ElevatedButton(onPressed: _loadPlaces, child: const Text('Try Again')),
-            ],
-          ),
-        ),
+      body = _Message(
+        icon: Icons.cloud_off_rounded,
+        text: error!,
+        action: ElevatedButton(onPressed: _loadPlaces, child: const Text('Try Again')),
       );
     } else if (places == null) {
       body = const Center(child: CircularProgressIndicator());
     } else if (places!.isEmpty) {
-      body = const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('No partner places offer this reward yet.', textAlign: TextAlign.center),
-        ),
-      );
+      body = const _Message(icon: Icons.storefront_rounded, text: 'No partner places offer this reward yet.');
     } else {
       body = ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text('${widget.reward.description}. Choose where you\'ll use it:'),
-          ),
-          for (var place in places!)
-            ListTile(
-              leading: const Icon(Icons.restaurant),
-              title: Text(place['placeName'] ?? 'Unnamed place'),
-              trailing: redeemingPlaceId == place['placeId']
-                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.chevron_right),
-              onTap: redeemingPlaceId == null ? () => _redeem(place) : null,
+          Card(
+            color: AppColors.lightPurple,
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  IconSquare(color: widget.reward.color, icon: widget.reward.icon, size: 48),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      '${widget.reward.description}. Choose where you\'ll use it:',
+                      style: AppText.body(size: 15, weight: FontWeight.w700),
+                    ),
+                  ),
+                ],
+              ),
             ),
+          ),
+          const SizedBox(height: 8),
+          for (var place in places!)
+            Builder(builder: (context) {
+              PlaceCategory category = PlaceCategory.fromName(place['category']);
+              return Card(
+                child: ListTile(
+                  contentPadding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppShapes.cardRadius)),
+                  leading: IconSquare(color: category.color, icon: category.icon, size: 44),
+                  title: Text(place['placeName'] ?? 'Unnamed place', style: AppText.heading(size: 18)),
+                  subtitle: Text(category.label),
+                  trailing: redeemingPlaceId == place['placeId']
+                      ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
+                      : const Icon(Icons.chevron_right_rounded, color: AppColors.purple),
+                  onTap: redeemingPlaceId == null ? () => _redeem(place) : null,
+                ),
+              );
+            }),
         ],
       );
     }
@@ -166,6 +178,35 @@ class _RedeemRewardScreenState extends State<RedeemRewardScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(widget.reward.name)),
       body: body,
+    );
+  }
+}
+
+/// An icon square with a message, and an optional button, for empty and
+/// error states.
+class _Message extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Widget? action;
+  final Color textColor;
+
+  const _Message({required this.icon, required this.text, this.action, this.textColor = AppColors.ink});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconSquare(color: AppColors.lightPurple, icon: icon, size: 80),
+            const SizedBox(height: 16),
+            Text(text, textAlign: TextAlign.center, style: AppText.body(size: 16, color: textColor)),
+            if (action != null) ...[const SizedBox(height: 20), action!],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -181,27 +222,51 @@ class VoucherScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Voucher')),
-      body: StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance.collection('vouchers').doc(code).snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            debugPrint('Loading voucher failed: ${snapshot.error}');
-            return const Center(child: Text('Couldn\'t load this voucher. Please try again later.'));
-          }
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          if (!snapshot.data!.exists) return const Center(child: Text('This voucher doesn\'t exist.'));
-          return _VoucherCard(data: snapshot.data!.data() as Map<String, dynamic>);
-        },
+      backgroundColor: AppColors.purple,
+      appBar: AppBar(
+        title: const Text('Voucher'),
+        backgroundColor: AppColors.purple,
+        foregroundColor: Colors.white,
+        titleTextStyle: AppText.heading(size: 24, color: Colors.white),
+      ),
+      body: Stack(
+        children: [
+          const Positioned(left: -60, top: 40, child: DecorCircle(size: 160, color: AppColors.coral)),
+          const Positioned(right: -50, bottom: 60, child: DecorCircle(size: 190, color: AppColors.sky)),
+          StreamBuilder<DocumentSnapshot>(
+            stream: FirebaseFirestore.instance.collection('vouchers').doc(code).snapshots(),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                debugPrint('Loading voucher failed: ${snapshot.error}');
+                return const _Message(
+                  icon: Icons.cloud_off_rounded,
+                  text: 'Couldn\'t load this voucher. Please try again later.',
+                  textColor: Colors.white,
+                );
+              }
+              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Colors.white));
+              if (!snapshot.data!.exists) {
+                return const _Message(
+                  icon: Icons.search_off_rounded,
+                  text: 'This voucher doesn\'t exist.',
+                  textColor: Colors.white,
+                );
+              }
+              return _VoucherTicket(data: snapshot.data!.data() as Map<String, dynamic>);
+            },
+          ),
+        ],
       ),
     );
   }
 }
 
-class _VoucherCard extends StatelessWidget {
+/// The white ticket: discount on a yellow top, a dashed tear line with
+/// notches, then the code, username, place, expiry and the live clock.
+class _VoucherTicket extends StatelessWidget {
   final Map<String, dynamic> data;
 
-  const _VoucherCard({required this.data});
+  const _VoucherTicket({required this.data});
 
   @override
   Widget build(BuildContext context) {
@@ -209,58 +274,135 @@ class _VoucherCard extends StatelessWidget {
     DateTime expiresAt = (data['expiresAt'] as Timestamp).toDate();
     DateTime? usedAt = (data['usedAt'] as Timestamp?)?.toDate();
     VoucherStatus status = voucherStatus(data);
-    TextTheme text = Theme.of(context).textTheme;
 
-    return ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        Text(
-          '${data['discountPercent']}% off',
-          textAlign: TextAlign.center,
-          style: text.displaySmall?.copyWith(fontWeight: FontWeight.bold),
-        ),
-        Text(data['placeName'] ?? '', textAlign: TextAlign.center, style: text.titleLarge),
-        const SizedBox(height: 24),
-        Container(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            border: Border.all(color: status.color, width: 2),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Column(
-            children: [
-              SelectableText(
-                formatVoucherCode(data['code']),
-                style: text.displaySmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 4,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                  decoration: status == VoucherStatus.valid ? null : TextDecoration.lineThrough,
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+              boxShadow: [
+                BoxShadow(color: AppColors.ink.withValues(alpha: 0.3), blurRadius: 30, offset: const Offset(0, 12)),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+              child: ColoredBox(
+                color: AppColors.card,
+                child: Column(
+                  children: [
+                    // Top: the discount.
+                    Container(
+                      width: double.infinity,
+                      color: AppColors.yellow,
+                      padding: const EdgeInsets.fromLTRB(20, 26, 20, 22),
+                      child: Column(
+                        children: [
+                          Text(
+                            '${data['discountPercent']}% off',
+                            textAlign: TextAlign.center,
+                            style: AppText.heading(size: 52),
+                          ),
+                          Text(
+                            data['placeName'] ?? '',
+                            textAlign: TextAlign.center,
+                            style: AppText.heading(size: 20, weight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const _TearLine(),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                      child: Column(
+                        children: [
+                          Text('Voucher code', style: AppText.body(size: 14, color: AppColors.muted)),
+                          const SizedBox(height: 4),
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: SelectableText(
+                              formatVoucherCode(data['code']),
+                              style: AppText.heading(size: 40).copyWith(
+                                letterSpacing: 5,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                                decoration: status == VoucherStatus.valid ? null : TextDecoration.lineThrough,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text('@${data['username']}', style: AppText.heading(size: 20, color: AppColors.purple)),
+                          const SizedBox(height: 14),
+                          ColorChip(label: status.label, color: status.color, icon: status.icon),
+                          const SizedBox(height: 10),
+                          Text(
+                            switch (status) {
+                              VoucherStatus.used => 'Used on ${localizations.formatMediumDate(usedAt!)} at '
+                                  '${localizations.formatTimeOfDay(TimeOfDay.fromDateTime(usedAt))}.',
+                              VoucherStatus.expired => 'Expired on ${localizations.formatMediumDate(expiresAt)}.',
+                              VoucherStatus.valid => 'Valid until ${localizations.formatMediumDate(expiresAt)}. Works '
+                                  'once, at this place only. Show this screen to the staff.',
+                            },
+                            textAlign: TextAlign.center,
+                            style: AppText.body(size: 15, color: AppColors.muted),
+                          ),
+                          const SizedBox(height: 18),
+                          const _LiveClock(),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 4),
-              Text('@${data['username']}', style: text.titleMedium),
-            ],
+            ),
           ),
         ),
-        const SizedBox(height: 16),
-        Center(child: Chip(label: Text(status.label), backgroundColor: status.color.withValues(alpha: 0.15))),
-        const SizedBox(height: 8),
-        Text(
-          switch (status) {
-            VoucherStatus.used => 'Used on ${localizations.formatMediumDate(usedAt!)} at '
-                '${localizations.formatTimeOfDay(TimeOfDay.fromDateTime(usedAt))}.',
-            VoucherStatus.expired => 'Expired on ${localizations.formatMediumDate(expiresAt)}.',
-            VoucherStatus.valid => 'Valid until ${localizations.formatMediumDate(expiresAt)}. Works once, at this '
-                'place only. Show this screen to the staff.',
-          },
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 24),
-        const _LiveClock(),
-      ],
+      ),
     );
   }
+}
+
+/// A dashed line across the ticket with a round notch at each end, cut in
+/// the screen's purple.
+class _TearLine extends StatelessWidget {
+  const _TearLine();
+
+  static const double notch = 28;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: notch + 8,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: notch / 2 + 10),
+            child: CustomPaint(size: const Size(double.infinity, 2), painter: _DashPainter()),
+          ),
+          const Positioned(left: -notch / 2, child: DecorCircle(size: notch, color: AppColors.purple)),
+          const Positioned(right: -notch / 2, child: DecorCircle(size: notch, color: AppColors.purple)),
+        ],
+      ),
+    );
+  }
+}
+
+class _DashPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    Paint paint = Paint()
+      ..color = AppColors.lightPurple
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    for (double x = 0; x < size.width; x += 14) {
+      canvas.drawLine(Offset(x, size.height / 2), Offset((x + 7).clamp(0, size.width), size.height / 2), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashPainter oldDelegate) => false;
 }
 
 /// The current time to the second.
@@ -290,29 +432,46 @@ class _LiveClockState extends State<_LiveClock> {
   Widget build(BuildContext context) {
     DateTime now = DateTime.now();
     String two(int n) => n.toString().padLeft(2, '0');
-    return Column(
-      children: [
-        Text(
-          '${two(now.hour)}:${two(now.minute)}:${two(now.second)}',
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                fontFeatures: const [FontFeature.tabularFigures()],
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.schedule_rounded, color: AppColors.purple, size: 22),
+              const SizedBox(width: 6),
+              Text(
+                '${two(now.hour)}:${two(now.minute)}:${two(now.second)}',
+                style: AppText.heading(size: 30).copyWith(fontFeatures: const [FontFeature.tabularFigures()]),
               ),
-        ),
-        Text(MaterialLocalizations.of(context).formatFullDate(now), style: TextStyle(color: Colors.grey[600])),
-      ],
+            ],
+          ),
+          Text(
+            MaterialLocalizations.of(context).formatFullDate(now),
+            style: AppText.body(size: 14, color: AppColors.muted),
+          ),
+        ],
+      ),
     );
   }
 }
 
 enum VoucherStatus {
-  valid('Valid', Colors.green),
-  used('Used', Colors.grey),
-  expired('Expired', Colors.red);
+  valid('Valid', AppColors.mint, Icons.check_circle_rounded),
+  used('Used', AppColors.lightPurple, Icons.done_all_rounded),
+  expired('Expired', AppColors.coral, Icons.event_busy_rounded);
 
-  const VoucherStatus(this.label, this.color);
+  const VoucherStatus(this.label, this.color, this.icon);
 
   final String label;
   final Color color;
+  final IconData icon;
 }
 
 VoucherStatus voucherStatus(Map<String, dynamic> data) {
@@ -336,7 +495,10 @@ class MyVouchersScreen extends StatelessWidget {
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             debugPrint('Loading vouchers failed: ${snapshot.error}');
-            return const Center(child: Text('Couldn\'t load your vouchers. Please try again later.'));
+            return const _Message(
+              icon: Icons.cloud_off_rounded,
+              text: 'Couldn\'t load your vouchers. Please try again later.',
+            );
           }
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
@@ -344,30 +506,65 @@ class MyVouchersScreen extends StatelessWidget {
           var vouchers = snapshot.data!.docs.map((d) => d.data() as Map<String, dynamic>).toList()
             ..sort((a, b) => (b['createdAt'] as Timestamp).compareTo(a['createdAt'] as Timestamp));
           if (vouchers.isEmpty) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No vouchers yet. Redeem a reward to get one.', textAlign: TextAlign.center),
-              ),
+            return const _Message(
+              icon: Icons.confirmation_number_rounded,
+              text: 'No vouchers yet. Redeem a reward to get one.',
             );
           }
 
           MaterialLocalizations localizations = MaterialLocalizations.of(context);
           return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
             children: [
               for (var voucher in vouchers)
                 Builder(builder: (context) {
                   VoucherStatus status = voucherStatus(voucher);
                   DateTime expiresAt = (voucher['expiresAt'] as Timestamp).toDate();
-                  return ListTile(
-                    leading: Icon(Icons.confirmation_number, color: status.color),
-                    title: Text('${voucher['discountPercent']}% off at ${voucher['placeName']}'),
-                    subtitle: Text(status == VoucherStatus.valid
-                        ? 'Valid until ${localizations.formatMediumDate(expiresAt)}'
-                        : status.label),
-                    trailing: Text(formatVoucherCode(voucher['code'])),
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => VoucherScreen(code: voucher['code'])),
+                  bool valid = status == VoucherStatus.valid;
+                  return Card(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => VoucherScreen(code: voucher['code'])),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            IconSquare(
+                              color: valid ? AppColors.yellow : AppColors.lightPurple,
+                              icon: Icons.confirmation_number_rounded,
+                              size: 52,
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${voucher['discountPercent']}% off at ${voucher['placeName']}',
+                                    style: AppText.heading(size: 17, color: valid ? AppColors.ink : AppColors.muted),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    formatVoucherCode(voucher['code']),
+                                    style: AppText.heading(size: 16, weight: FontWeight.w600, color: AppColors.muted)
+                                        .copyWith(letterSpacing: 2),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  valid
+                                      ? Text(
+                                          'Valid until ${localizations.formatMediumDate(expiresAt)}',
+                                          style: AppText.body(size: 14, color: AppColors.muted),
+                                        )
+                                      : ColorChip(label: status.label, color: status.color, compact: true),
+                                ],
+                              ),
+                            ),
+                            const Icon(Icons.chevron_right_rounded, color: AppColors.purple),
+                          ],
+                        ),
+                      ),
                     ),
                   );
                 }),
