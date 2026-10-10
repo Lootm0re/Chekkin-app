@@ -156,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     List<Widget> screens = [
-      const MapScreen(),
+      MapScreen(userPoints: userPoints),
       RewardsScreen(userPoints: userPoints),
       const LeaderboardScreen(),
       const ProfileScreen(),

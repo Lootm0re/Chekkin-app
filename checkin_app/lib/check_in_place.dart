@@ -2,27 +2,28 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import 'pin_icons.dart';
+import 'theme.dart';
 
 /// The kinds of place on the map. Restaurants, cafés, hotels and shops can
 /// only be checked in to once they're partners, with a code from staff;
 /// touristic places only need you to be there. The server decides each
 /// place's category.
 enum PlaceCategory {
-  restaurant('Restaurant', BitmapDescriptor.hueRed),
-  cafe('Café', BitmapDescriptor.hueOrange),
-  hotel('Hotel', BitmapDescriptor.hueViolet),
-  shop('Shop', BitmapDescriptor.hueYellow),
-  touristic('Touristic', BitmapDescriptor.hueGreen);
+  restaurant('Restaurant', AppColors.coral, Icons.restaurant_rounded),
+  cafe('Café', AppColors.mint, Icons.local_cafe_rounded),
+  hotel('Hotel', AppColors.purple, Icons.hotel_rounded),
+  shop('Shop', AppColors.yellow, Icons.shopping_bag_rounded),
+  touristic('Touristic', AppColors.sky, Icons.attractions_rounded);
 
-  const PlaceCategory(this.label, this.markerHue);
+  const PlaceCategory(this.label, this.color, this.icon);
 
   final String label;
-  final double markerHue;
+
+  /// The pin, legend and place page colour.
+  final Color color;
+  final IconData icon;
 
   bool get isBusiness => this != touristic;
-
-  /// The marker colour, for legends and labels.
-  Color get color => pinColor(markerHue);
 
   static PlaceCategory fromName(String? name) =>
       values.firstWhere((c) => c.name == name, orElse: () => touristic);
@@ -80,7 +81,8 @@ class CheckInPlace {
   /// A business that isn't a partner yet: shown grey, no check-ins.
   bool get closed => category.isBusiness && !partner;
 
-  double get pinHue => closed ? greyPinHue : category.markerHue;
+  /// Grey for businesses that aren't partners yet, else the category's colour.
+  PinStyle get pinStyle => PinStyle(closed ? AppColors.inactive : category.color, category.icon);
 
   /// E.g. 'Premium partner · 50 points', for the map.
   String get summary {
@@ -91,26 +93,26 @@ class CheckInPlace {
   }
 }
 
-/// A key to the marker colours.
+/// A key to the pin colours.
 class PlaceCategoryLegend extends StatelessWidget {
   const PlaceCategoryLegend({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(6),
-        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 3)],
+        color: AppColors.card.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+        boxShadow: AppShapes.softShadow,
       ),
       child: Wrap(
         spacing: 12,
-        runSpacing: 4,
+        runSpacing: 6,
         alignment: WrapAlignment.center,
         children: [
           for (final category in PlaceCategory.values) _entry(category.color, category.label),
-          _entry(pinColor(greyPinHue), 'Not a partner yet'),
+          _entry(AppColors.inactive, 'Not a partner yet'),
         ],
       ),
     );
@@ -120,9 +122,18 @@ class PlaceCategoryLegend extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.location_on, size: 16, color: color),
-        const SizedBox(width: 2),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.black87)),
+        Container(
+          width: 14,
+          height: 14,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: [BoxShadow(color: AppColors.ink.withValues(alpha: 0.2), blurRadius: 2)],
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: AppText.body(size: 14, weight: FontWeight.w700)),
       ],
     );
   }

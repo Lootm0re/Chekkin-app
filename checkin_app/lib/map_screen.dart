@@ -11,9 +11,14 @@ import 'emulators.dart';
 import 'group_check_in.dart';
 import 'location_access.dart';
 import 'pin_icons.dart';
+import 'place_screen.dart';
+import 'theme.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  /// Spendable points, for the points pill.
+  final int userPoints;
+
+  const MapScreen({super.key, this.userPoints = 0});
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -24,20 +29,25 @@ class _MapScreenState extends State<MapScreen> {
   Position? currentPosition;
   Set<Marker> markers = {};
 
-  // Pin icons by hue: one per place category, grey for businesses that
-  // aren't partners yet, and the dev pretend location.
-  static const double _devPinHue = BitmapDescriptor.hueAzure;
-  final Future<Map<double, BitmapDescriptor>> _pinIcons = loadPinIcons([
-    for (final category in PlaceCategory.values) category.markerHue,
-    greyPinHue,
-    _devPinHue,
+  // Pin icons: one per place category, grey ones for businesses that aren't
+  // partners yet, and the dev pretend location.
+  static const PinStyle _devPin = PinStyle(AppColors.lightPurple, Icons.my_location_rounded);
+  final Future<Map<PinStyle, BitmapDescriptor>> _pinIcons = loadPinIcons([
+    for (final category in PlaceCategory.values) ...[
+      PinStyle(category.color, category.icon),
+      PinStyle(AppColors.inactive, category.icon),
+    ],
+    _devPin,
   ]);
   // _pinIcons once loaded, for building the dev marker.
-  Map<double, BitmapDescriptor> pinIcons = {};
+  Map<PinStyle, BitmapDescriptor> pinIcons = {};
 
-  // The place in range that the check-in panel is showing.
+  // The place in range that the card at the bottom is showing, and how far
+  // away it was when picked.
   CheckInPlace? selectedPlace;
-  // Why the last check-in attempt failed, shown in the panel.
+  double selectedDistance = 0;
+  // Why the last check-in from the card failed (touristic places; partner
+  // places check in on PlaceScreen, which shows its own errors).
   String? checkInError;
 
   // Messages are shown in a banner on the map, not snackbars: on web the
@@ -55,20 +65,24 @@ class _MapScreenState extends State<MapScreen> {
   // Dev tools only: used instead of the real location while set.
   Position? devFakePosition;
 
-  // Friends to invite to a group check-in (id -> username); code places only.
-  Map<String, String> groupFriends = {};
   // A group check-in the user started or joined, shown until dismissed.
   String? activeGroupId;
-  final TextEditingController codeController = TextEditingController();
   final FirebaseFunctions functions = cloudFunctions;
 
   static const double checkInRangeMeters = 22;
-  static const int codeLength = 6; // keep in sync with BUSINESS_CODE_DIGITS
 
-  // Hides Google's own place icons: tapping them opens Google's info popup,
-  // which the app can't hook into. The app shows check-in places as markers.
-  static const String _hidePointsOfInterestStyle =
-      '[{"featureType":"poi","elementType":"labels","stylers":[{"visibility":"off"}]},'
+  // Soft green land, light blue water and white roads. Also hides Google's
+  // own place icons: tapping them opens Google's info popup, which the app
+  // can't hook into. The app shows check-in places as markers.
+  static const String _mapStyle = '['
+      '{"featureType":"landscape","elementType":"geometry","stylers":[{"color":"#dff3e3"}]},'
+      '{"featureType":"poi","elementType":"geometry","stylers":[{"color":"#cdeed5"}]},'
+      '{"featureType":"water","elementType":"geometry","stylers":[{"color":"#bfe3ff"}]},'
+      '{"featureType":"road","elementType":"geometry.fill","stylers":[{"color":"#ffffff"}]},'
+      '{"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#e4e0f2"}]},'
+      '{"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#6b6794"}]},'
+      '{"featureType":"administrative","elementType":"labels.text.fill","stylers":[{"color":"#231a5c"}]},'
+      '{"featureType":"poi","elementType":"labels","stylers":[{"visibility":"off"}]},'
       '{"featureType":"transit","elementType":"labels.icon","stylers":[{"visibility":"off"}]}]';
 
   @override
@@ -80,12 +94,11 @@ class _MapScreenState extends State<MapScreen> {
     _getUserLocation();
   }
 
-  BitmapDescriptor _pinIcon(double hue) => pinIcons[hue] ?? BitmapDescriptor.defaultMarkerWithHue(hue);
+  BitmapDescriptor _pinIcon(PinStyle style) => pinIcons[style] ?? BitmapDescriptor.defaultMarker;
 
   @override
   void dispose() {
     mapMessageTimer?.cancel();
-    codeController.dispose();
     super.dispose();
   }
 
@@ -180,14 +193,16 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _loadNearbyPlaces(Position position) async {
     setState(() => isLoadingPlaces = true);
     try {
-      final response = await functions.httpsCallable('nearbyPlaces').call({
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-      });
+      List places = useEmulators
+          ? emulatorNearbyPlaces(position.latitude, position.longitude)
+          : (await functions.httpsCallable('nearbyPlaces').call({
+              'latitude': position.latitude,
+              'longitude': position.longitude,
+            }))
+              .data['places'];
       await _pinIcons;
       if (!mounted) return;
 
-      List places = response.data['places'];
       Set<Marker> newMarkers = {};
       for (var data in places) {
         CheckInPlace place = CheckInPlace.fromMap(data);
@@ -195,7 +210,8 @@ class _MapScreenState extends State<MapScreen> {
           Marker(
             markerId: MarkerId(place.id),
             position: place.position,
-            icon: _pinIcon(place.pinHue),
+            icon: _pinIcon(place.pinStyle),
+            anchor: const Offset(0.5, 0.5),
             infoWindow: InfoWindow(title: place.name, snippet: place.summary),
             onTap: () => _selectPlace(place),
           ),
@@ -258,12 +274,11 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     if (distance <= checkInRangeMeters) {
-      if (selectedPlace?.id != place.id) {
-        codeController.clear();
-        checkInError = null;
-        groupFriends = {};
-      }
-      setState(() => selectedPlace = place);
+      if (selectedPlace?.id != place.id) checkInError = null;
+      setState(() {
+        selectedPlace = place;
+        selectedDistance = distance;
+      });
       _hideMapMessage();
     } else {
       setState(() => selectedPlace = null);
@@ -281,22 +296,10 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  void _handleCheckIn() async {
-    CheckInPlace? place = selectedPlace;
-    if (place == null || isCheckingIn) return;
-
-    setState(() {
-      isCheckingIn = true;
-      checkInError = null;
-    });
-
-    String placeId = place.id;
-    String placeName = place.name;
-    List<String> friendUids = place.requiresCode ? groupFriends.keys.toList() : [];
-    int? pointsEarned;
-    String? groupId;
-    String? pointsNote;
-
+  /// Checks in at [place] with the staff's [code] (partner places) and
+  /// [friendUids] to invite. On success the card closes and a group check-in
+  /// shows its progress; the caller shows the confirmation.
+  Future<CheckInOutcome> _performCheckIn(CheckInPlace place, {String? code, List<String> friendUids = const []}) async {
     // The position from when the place was picked may be minutes old, and the
     // server only accepts a recent one.
     Position position = currentPosition!;
@@ -309,50 +312,80 @@ class _MapScreenState extends State<MapScreen> {
     try {
       HttpsCallable callable = functions.httpsCallable('performCheckIn');
       final response = await callable.call({
-        'placeId': placeId,
+        'placeId': place.id,
         ..._deviceFix(position),
-        if (place.requiresCode) 'code': codeController.text.trim(),
-        if (friendUids.isNotEmpty) 'friendUids': friendUids,
+        if (place.requiresCode) 'code': code ?? '',
+        if (place.requiresCode && friendUids.isNotEmpty) 'friendUids': friendUids,
       });
-
-      pointsEarned = (response.data['pointsEarned'] as num).toInt();
-      placeName = response.data['placeName'] ?? placeName;
-      groupId = response.data['groupId'];
-      pointsNote = _pointsNote(response.data);
-    } on FirebaseFunctionsException catch (e) {
-      debugPrint('Check-in failed: [${e.code}] ${e.message}');
-      checkInError = e.message ?? 'Check-in failed. Please try again.';
-    } catch (e) {
-      debugPrint('Check-in failed: $e');
-      checkInError = 'Something went wrong. Please check your connection and try again.';
-    } finally {
-      // On failure the panel stays open, so a mistyped code can be retried.
+      String? groupId = response.data['groupId'];
       if (mounted) {
         setState(() {
-          isCheckingIn = false;
-          codeController.clear();
-          if (pointsEarned != null) {
-            selectedPlace = null;
-            groupFriends = {};
-            if (groupId != null) activeGroupId = groupId;
-          }
+          selectedPlace = null;
+          if (groupId != null) activeGroupId = groupId;
         });
       }
+      return CheckInOutcome.succeeded(
+        placeName: response.data['placeName'] ?? place.name,
+        pointsEarned: (response.data['pointsEarned'] as num).toInt(),
+        groupId: groupId,
+        pointsNote: _pointsNote(response.data),
+        invited: place.requiresCode ? friendUids.length : 0,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('Check-in failed: [${e.code}] ${e.message}');
+      return CheckInOutcome.failed(e.message ?? 'Check-in failed. Please try again.');
+    } catch (e) {
+      debugPrint('Check-in failed: $e');
+      return const CheckInOutcome.failed('Something went wrong. Please check your connection and try again.');
+    }
+  }
+
+  /// The card's Check in button: places without a code check in right
+  /// here; partner places open PlaceScreen for the code and friends.
+  Future<void> _onCheckInPressed() async {
+    CheckInPlace? place = selectedPlace;
+    if (place == null || isCheckingIn) return;
+
+    if (place.requiresCode) {
+      CheckInOutcome? outcome = await Navigator.of(context).push<CheckInOutcome>(MaterialPageRoute(
+        builder: (_) => PlaceScreen(
+          place: place,
+          distanceMeters: selectedDistance,
+          onCheckIn: ({required code, required friendUids}) =>
+              _performCheckIn(place, code: code, friendUids: friendUids),
+        ),
+      ));
+      if (outcome != null && mounted) _showOutcome(outcome);
+      return;
     }
 
-    if (pointsEarned != null && mounted) {
-      int invited = friendUids.length;
-      String? groupNote = groupId == null
-          ? null
-          : 'You invited $invited friend${invited == 1 ? '' : 's'}. They have 10 minutes to join from their '
-              'own phones here, and everyone\'s points grow with the group: up to '
-              '${formatMultiplier(groupMultipliers[invited + 1]!)} if they all join.';
-      _showCheckInConfirmation(
-        placeName,
-        pointsEarned,
-        note: pointsNote == null || groupNote == null ? pointsNote ?? groupNote : '$pointsNote\n\n$groupNote',
-      );
-    }
+    setState(() {
+      isCheckingIn = true;
+      checkInError = null;
+    });
+    CheckInOutcome outcome = await _performCheckIn(place);
+    if (!mounted) return;
+    // On failure the card stays open, so it can be retried.
+    setState(() {
+      isCheckingIn = false;
+      checkInError = outcome.error;
+    });
+    if (outcome.succeeded) _showOutcome(outcome);
+  }
+
+  void _showOutcome(CheckInOutcome outcome) {
+    int invited = outcome.invited;
+    String? pointsNote = outcome.pointsNote;
+    String? groupNote = outcome.groupId == null
+        ? null
+        : 'You invited $invited friend${invited == 1 ? '' : 's'}. They have 10 minutes to join from their '
+            'own phones here, and everyone\'s points grow with the group: up to '
+            '${formatMultiplier(groupMultipliers[invited + 1]!)} if they all join.';
+    _showCheckInConfirmation(
+      outcome.placeName,
+      outcome.pointsEarned!,
+      note: pointsNote == null || groupNote == null ? pointsNote ?? groupNote : '$pointsNote\n\n$groupNote',
+    );
   }
 
   /// Why a check-in earned less than usual, if it did.
@@ -407,28 +440,23 @@ class _MapScreenState extends State<MapScreen> {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
-        title: Text(title),
+        icon: const IconSquare(color: AppColors.mint, icon: Icons.check_rounded, size: 64),
+        title: Text(title, textAlign: TextAlign.center),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(placeName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
-            const SizedBox(height: 12),
-            Text(
-              '+$pointsEarned points',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.green[700],
-                  ),
-            ),
+            Text(placeName, textAlign: TextAlign.center, style: AppText.body(size: 16, color: AppColors.muted)),
+            const SizedBox(height: 14),
+            ColorChip(label: '+$pointsEarned points', color: AppColors.yellow),
             if (note != null) ...[
               const SizedBox(height: 16),
-              Text(note, textAlign: TextAlign.center),
+              Text(note, textAlign: TextAlign.center, style: AppText.body(size: 15)),
             ],
           ],
         ),
+        actionsAlignment: MainAxisAlignment.center,
         actions: [
-          TextButton(
+          ElevatedButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('OK'),
           ),
@@ -441,27 +469,31 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     if (currentPosition == null && locationError != null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Check In')),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.location_off, size: 48, color: Colors.grey),
-                const SizedBox(height: 16),
-                Text(locationError!, textAlign: TextAlign.center),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: _getUserLocation,
-                  child: const Text('Try Again'),
-                ),
-                if (locationPermanentlyDenied)
-                  TextButton(
-                    onPressed: Geolocator.openAppSettings,
-                    child: const Text('Open Settings'),
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const IconSquare(color: AppColors.coral, icon: Icons.location_off_rounded, size: 88),
+                  const SizedBox(height: 20),
+                  Text('Where are you?', style: AppText.heading(size: 26), textAlign: TextAlign.center),
+                  const SizedBox(height: 10),
+                  Text(locationError!, textAlign: TextAlign.center, style: AppText.body(size: 16)),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: _getUserLocation,
+                    style: ElevatedButton.styleFrom(minimumSize: const Size(220, AppShapes.buttonHeight)),
+                    child: const Text('Try Again'),
                   ),
-              ],
+                  if (locationPermanentlyDenied)
+                    TextButton(
+                      onPressed: Geolocator.openAppSettings,
+                      child: const Text('Open Settings'),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -475,24 +507,6 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Check In'),
-        actions: [
-          if (devFakePosition != null)
-            IconButton(
-              tooltip: 'DEV: Back to real location',
-              icon: const Icon(Icons.gps_off, color: Colors.deepOrange),
-              onPressed: _devClearTeleport,
-            ),
-          IconButton(
-            tooltip: 'Find places near me',
-            icon: isLoadingPlaces
-                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.refresh),
-            onPressed: isLoadingPlaces ? null : _getUserLocation,
-          ),
-        ],
-      ),
       body: Stack(
         children: [
           GoogleMap(
@@ -501,14 +515,15 @@ class _MapScreenState extends State<MapScreen> {
               zoom: 15,
             ),
             myLocationEnabled: true,
-            style: _hidePointsOfInterestStyle,
+            style: _mapStyle,
             markers: {
               ...markers,
               if (devFakePosition != null)
                 Marker(
                   markerId: const MarkerId('dev-fake-position'),
                   position: LatLng(devFakePosition!.latitude, devFakePosition!.longitude),
-                  icon: _pinIcon(_devPinHue),
+                  icon: _pinIcon(_devPin),
+                  anchor: const Offset(0.5, 0.5),
                   infoWindow: const InfoWindow(title: 'DEV: Pretend location'),
                 ),
             },
@@ -516,190 +531,215 @@ class _MapScreenState extends State<MapScreen> {
             onLongPress: devTools ? _devTeleport : null,
           ),
 
-          // Legend, messages, group progress and invites, top to bottom.
-          Positioned(
-            top: devTools ? 44 : 8,
-            left: 8,
-            right: 8,
-            child: Column(
-              children: [
-                const IgnorePointer(child: Center(child: PlaceCategoryLegend())),
-                if (mapMessage != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Material(
-                      color: Colors.grey[900],
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(8),
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 14),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                child: Text(mapMessage!, style: const TextStyle(color: Colors.white)),
-                              ),
-                            ),
-                            if (mapMessageAction != null)
-                              TextButton(onPressed: mapMessageAction, child: Text(mapMessageActionLabel ?? 'OK')),
-                            IconButton(
-                              tooltip: 'Dismiss',
-                              icon: const Icon(Icons.close, color: Colors.white70, size: 20),
-                              onPressed: _hideMapMessage,
-                            ),
-                          ],
+          // Top bar, dev hint, legend, messages, group progress and invites.
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(child: _placesPill()),
+                      const SizedBox(width: 10),
+                      _pointsPill(),
+                    ],
+                  ),
+                  if (devTools)
+                    IgnorePointer(
+                      child: Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        decoration: ShapeDecoration(color: AppColors.ink, shape: const StadiumBorder()),
+                        child: Text(
+                          devFakePosition != null
+                              ? 'DEV: Using a pretend location. Long-press to move it.'
+                              : 'DEV: Long-press the map to pretend you\'re there.',
+                          style: AppText.body(size: 14, weight: FontWeight.w700, color: Colors.white),
+                          textAlign: TextAlign.center,
                         ),
                       ),
                     ),
-                  ),
-                if (activeGroupId != null)
-                  ActiveGroupCard(groupId: activeGroupId!, onDismiss: () => setState(() => activeGroupId = null)),
-                GroupInviteCards(onJoin: _joinGroup),
-              ],
+                  const SizedBox(height: 8),
+                  const IgnorePointer(child: Center(child: PlaceCategoryLegend())),
+                  if (mapMessage != null) Padding(padding: const EdgeInsets.only(top: 8), child: _messageBanner()),
+                  if (activeGroupId != null)
+                    ActiveGroupCard(groupId: activeGroupId!, onDismiss: () => setState(() => activeGroupId = null)),
+                  GroupInviteCards(onJoin: _joinGroup),
+                ],
+              ),
             ),
           ),
 
-          if (devTools)
-            Positioned(
-              top: 8,
-              left: 8,
-              right: 8,
-              child: IgnorePointer(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.deepOrange.withValues(alpha: 0.9),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    devFakePosition != null
-                        ? 'DEV: Using a pretend location. Long-press to move it.'
-                        : 'DEV: Long-press the map to pretend you\'re there.',
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              ),
-            ),
-
           if (selectedPlace != null)
             Positioned(
-              bottom: 30,
-              left: 20,
-              right: 20,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (checkInError != null) ...[
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.red[50],
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.red[300]!),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.error_outline, color: Colors.red[700]),
-                          const SizedBox(width: 8),
-                          Expanded(child: Text(checkInError!, style: TextStyle(color: Colors.red[900]))),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  // Tier and what the check-in is worth.
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 3)],
-                    ),
-                    child: Text(selectedPlace!.summary, style: const TextStyle(fontSize: 13)),
-                  ),
-                  const SizedBox(height: 8),
-                  if (appOnlyFeaturesAvailable && selectedPlace!.requiresCode) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: selectedPlace!.category.color, width: 2),
-                      ),
-                      child: TextField(
-                        controller: codeController,
-                        keyboardType: TextInputType.number,
-                        maxLength: codeLength,
-                        decoration: InputDecoration(
-                          hintText: 'Code from the staff at ${selectedPlace!.name}',
-                          border: InputBorder.none,
-                          counterText: '',
-                          icon: const Icon(Icons.pin),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  // Group check-ins are only at partner businesses.
-                  if (appOnlyFeaturesAvailable && selectedPlace!.requiresCode) ...[
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 44),
-                      ),
-                      icon: const Icon(Icons.group_add),
-                      label: Text(
-                        groupFriends.isEmpty
-                            ? 'Check in with friends (optional)'
-                            : 'With ${groupFriends.values.map((u) => '@$u').join(', ')}',
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      onPressed: isCheckingIn
-                          ? null
-                          : () async {
-                              var picked = await pickGroupFriends(context, groupFriends);
-                              if (picked != null && mounted) setState(() => groupFriends = picked);
-                            },
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  if (!appOnlyFeaturesAvailable)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 3)],
-                      ),
-                      child: const Text(appOnlyMessage, textAlign: TextAlign.center),
-                    )
-                  else
-                    // Rebuilds as the code is typed, to enable the button.
-                    ValueListenableBuilder<TextEditingValue>(
-                      valueListenable: codeController,
-                      builder: (context, code, _) {
-                        bool needsCode = selectedPlace!.requiresCode && code.text.trim().length != codeLength;
-                        return ElevatedButton(
-                          onPressed: isCheckingIn || needsCode ? null : _handleCheckIn,
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            minimumSize: const Size(double.infinity, 0),
-                          ),
-                          child: isCheckingIn
-                              ? const SizedBox(
-                                  height: 20, width: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                )
-                              : Text('Check In at ${selectedPlace!.name}'),
-                        );
-                      },
-                    ),
-                ],
+              bottom: 16,
+              left: 16,
+              right: 16,
+              child: _selectedPlaceCard(selectedPlace!),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// White pill at the top: what the map shows, and the refresh button.
+  Widget _placesPill() {
+    return Container(
+      height: AppShapes.buttonHeight,
+      padding: const EdgeInsets.only(left: 18, right: 4),
+      decoration: ShapeDecoration(
+        color: AppColors.card,
+        shape: const StadiumBorder(),
+        shadows: AppShapes.softShadow,
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.near_me_rounded, color: AppColors.purple),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Places near you',
+              style: AppText.body(size: 16, weight: FontWeight.w700),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (devFakePosition != null)
+            IconButton(
+              tooltip: 'DEV: Back to real location',
+              icon: const Icon(Icons.gps_off_rounded, color: AppColors.error),
+              onPressed: _devClearTeleport,
+            ),
+          IconButton(
+            tooltip: 'Find places near me',
+            icon: isLoadingPlaces
+                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2.5))
+                : const Icon(Icons.refresh_rounded, color: AppColors.ink),
+            onPressed: isLoadingPlaces ? null : _getUserLocation,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Yellow pill with the user's spendable points.
+  Widget _pointsPill() {
+    return Semantics(
+      label: '${widget.userPoints} points',
+      child: Container(
+        height: AppShapes.buttonHeight,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: ShapeDecoration(
+          color: AppColors.yellow,
+          shape: const StadiumBorder(),
+          shadows: AppShapes.softShadow,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.star_rounded, color: AppColors.ink),
+            const SizedBox(width: 6),
+            Text('${widget.userPoints}', style: AppText.heading(size: 20, weight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _messageBanner() {
+    return Material(
+      color: AppColors.ink,
+      elevation: 4,
+      shadowColor: AppColors.ink.withValues(alpha: 0.4),
+      borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+      child: Padding(
+        padding: const EdgeInsets.only(left: 18),
+        child: Row(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Text(mapMessage!, style: AppText.body(size: 15, color: Colors.white)),
               ),
+            ),
+            if (mapMessageAction != null)
+              TextButton(
+                onPressed: mapMessageAction,
+                style: TextButton.styleFrom(foregroundColor: AppColors.yellow),
+                child: Text(mapMessageActionLabel ?? 'OK'),
+              ),
+            IconButton(
+              tooltip: 'Dismiss',
+              icon: const Icon(Icons.close_rounded, color: Colors.white70),
+              onPressed: _hideMapMessage,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The place in range: name, category, distance, points and Check in.
+  Widget _selectedPlaceCard(CheckInPlace place) {
+    String? partnerNote = place.partner
+        ? '${tierLabels[place.tier] ?? 'Partner'} partner'
+            '${place.budgetUsedUp ? ' · monthly bonus used up' : ''} · code from the staff needed'
+        : null;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+        boxShadow: [
+          BoxShadow(color: AppColors.ink.withValues(alpha: 0.16), blurRadius: 30, offset: const Offset(0, 10)),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              IconSquare(color: place.category.color, icon: place.category.icon, size: 52),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(place.name, style: AppText.heading(size: 20), maxLines: 2, overflow: TextOverflow.ellipsis),
+                    Text(
+                      '${place.category.label} · ${selectedDistance.toStringAsFixed(0)} m away',
+                      style: AppText.body(size: 15, color: AppColors.muted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              ColorChip(label: '+${place.points} pts', color: AppColors.mint),
+            ],
+          ),
+          if (partnerNote != null) ...[
+            const SizedBox(height: 10),
+            Text(partnerNote, style: AppText.body(size: 14, color: AppColors.muted)),
+          ],
+          if (checkInError != null) ...[
+            const SizedBox(height: 12),
+            ErrorNote(message: checkInError!),
+          ],
+          const SizedBox(height: 14),
+          if (!appOnlyFeaturesAvailable)
+            Text(appOnlyMessage, textAlign: TextAlign.center, style: AppText.body(size: 15))
+          else
+            ElevatedButton(
+              onPressed: isCheckingIn ? null : _onCheckInPressed,
+              style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 58)),
+              child: isCheckingIn
+                  ? const SizedBox(
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.5), // on the disabled button
+                    )
+                  : const Text('Check in', style: TextStyle(fontSize: 20)),
             ),
         ],
       ),

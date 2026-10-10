@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'friends_screen.dart';
+import 'theme.dart';
 import 'user_avatar.dart';
 
 /// Group check-ins: at a partner business, the customer who uses the code
@@ -150,7 +151,7 @@ class _FriendPickerState extends State<_FriendPicker> {
               padding: const EdgeInsets.all(12),
               child: FilledButton(
                 onPressed: () => Navigator.of(context).pop(selected),
-                style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
+                style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, AppShapes.buttonHeight)),
                 child: Text(selected.isEmpty
                     ? 'Check in alone'
                     : 'Done: group of ${selected.length + 1} '
@@ -223,18 +224,18 @@ class _InviteCardState extends State<_InviteCard> {
     return Card(
       margin: const EdgeInsets.only(top: 8),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 8, 4),
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                const Icon(Icons.groups, color: Colors.deepPurple),
+                const Icon(Icons.groups_rounded, color: AppColors.purple),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     '@${invite['fromUsername']} invited you to check in together at ${invite['placeName']}',
-                    style: const TextStyle(fontWeight: FontWeight.w500),
+                    style: AppText.body(size: 15, weight: FontWeight.w700),
                   ),
                 ),
               ],
@@ -244,7 +245,7 @@ class _InviteCardState extends State<_InviteCard> {
                 CountdownText(
                   expiresAt: (invite['expiresAt'] as Timestamp).toDate(),
                   prefix: 'Closes in ',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                  style: AppText.body(size: 14, color: AppColors.muted),
                 ),
                 const Spacer(),
                 TextButton(
@@ -289,12 +290,12 @@ class ActiveGroupCard extends StatelessWidget {
 
         return Card(
           margin: const EdgeInsets.only(top: 8),
-          color: Colors.deepPurple[50],
+          color: AppColors.lightPurple,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+            padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
             child: Row(
               children: [
-                const Icon(Icons.groups, color: Colors.deepPurple),
+                const Icon(Icons.groups_rounded, color: AppColors.purple),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
@@ -303,14 +304,14 @@ class ActiveGroupCard extends StatelessWidget {
                       Text(
                         'Group at ${group['placeName']}: $size of ${invited + 1} '
                         '· ${formatMultiplier(groupMultipliers[size]!)} · +$myPoints pts',
-                        style: const TextStyle(fontWeight: FontWeight.w500),
+                        style: AppText.body(size: 15, weight: FontWeight.w700),
                       ),
                       closed
-                          ? Text('Group closed', style: TextStyle(color: Colors.grey[700], fontSize: 12))
+                          ? Text('Group closed', style: AppText.body(size: 14, color: AppColors.muted))
                           : CountdownText(
                               expiresAt: expiresAt,
                               prefix: 'Friends can join for ',
-                              style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                              style: AppText.body(size: 14, color: AppColors.muted),
                             ),
                     ],
                   ),
