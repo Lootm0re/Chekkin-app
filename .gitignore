@@ -3,3 +3,6 @@
 
 # Flutter SDK checked out into the workspace
 /flutter/
+
+# Emulator logs
+*-debug.log
