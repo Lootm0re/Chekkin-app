@@ -14,6 +14,7 @@ import 'rewards_screen.dart';
 import 'phone_verify_screen.dart';
 import 'leaderboard_screen.dart';
 import 'profile_picture.dart';
+import 'theme.dart';
 import 'business_screen.dart';
 import 'friends_screen.dart';
 import 'avatar_editor_screen.dart';
@@ -68,7 +69,7 @@ class CheckInApp extends StatelessWidget {
                 child: child!,
               )
           : null,
-      theme: ThemeData(primarySwatch: Colors.blue),
+      theme: AppTheme.light(),
       home: const AuthGate(),
     );
   }
@@ -174,14 +175,14 @@ class _HomeScreenState extends State<HomeScreen> {
           if (currentTab != 0) screens[currentTab],
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: currentTab,
-        onTap: (index) => setState(() => currentTab = index),
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Map'),
-          BottomNavigationBarItem(icon: Icon(Icons.star), label: 'Rewards'),
-          BottomNavigationBarItem(icon: Icon(Icons.leaderboard), label: 'Leaderboard'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
+      bottomNavigationBar: AppTabBar(
+        selectedIndex: currentTab,
+        onSelected: (index) => setState(() => currentTab = index),
+        tabs: const [
+          AppTab(icon: Icons.map_outlined, selectedIcon: Icons.map_rounded, label: 'Map'),
+          AppTab(icon: Icons.card_giftcard_outlined, selectedIcon: Icons.card_giftcard_rounded, label: 'Rewards'),
+          AppTab(icon: Icons.emoji_events_outlined, selectedIcon: Icons.emoji_events_rounded, label: 'Ranks'),
+          AppTab(icon: Icons.person_outline_rounded, selectedIcon: Icons.person_rounded, label: 'Profile'),
         ],
       ),
     );

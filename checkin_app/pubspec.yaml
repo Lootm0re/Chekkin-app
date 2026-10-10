@@ -45,6 +45,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   avatar_maker: ^1.9.0
   firebase_app_check: ^0.3.2+10
+  google_fonts: ^9.0.0
 
 dev_dependencies:
   flutter_test:
