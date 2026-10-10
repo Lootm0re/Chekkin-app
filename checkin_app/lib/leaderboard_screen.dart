@@ -14,10 +14,11 @@ class LeaderboardScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Leaderboard')),
       body: StreamBuilder<QuerySnapshot>(
         // Other users' private details live in users/{uid}; publicProfiles
-        // only holds what's shown here.
+        // only holds what's shown here. Ranked by points ever earned, so
+        // spending points on rewards doesn't cost a place.
         stream: FirebaseFirestore.instance
             .collection('publicProfiles')
-            .orderBy('points', descending: true)
+            .orderBy('lifetimePoints', descending: true)
             .limit(100)
             .snapshots(),
         builder: (context, snapshot) {
@@ -77,7 +78,7 @@ class LeaderboardScreen extends StatelessWidget {
                   ),
                   subtitle: Text('@${data['username'] ?? ''}'),
                   trailing: Text(
-                    '${data['points'] ?? 0} pts',
+                    '${data['lifetimePoints'] ?? 0} pts',
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),

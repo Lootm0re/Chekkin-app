@@ -61,7 +61,8 @@ service cloud.firestore {
         allow read, delete: if request.auth != null && request.auth.uid == uid;
       }
 
-      // placeCheckIns and codeAttempts: written by the check-in functions only.
+      // placeCheckIns and codeAttempts (check-in functions) and redemptions
+      // (redeemReward): written by functions only.
       match /{sub=**} {
         allow read, write: if false;
       }
@@ -97,8 +98,24 @@ service cloud.firestore {
         && (request.auth.uid in resource.data.members || request.auth.uid in resource.data.invited);
     }
 
+    // The rewards catalog, written by scripts/rewards-catalog.js. Read by the
+    // Rewards screen.
+    match /rewards/{rewardId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Vouchers, written by redeemReward and verifyVoucher. Users read their
+    // own for the voucher screen and My vouchers; owners check them through
+    // verifyVoucher.
+    match /vouchers/{code} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow write: if false;
+    }
+
     // alerts, businessSecrets, buddyCheckins, checkIns, devTesters,
-    // placeBudgets, places, placesQuota, phoneNumbers, and anything else.
+    // placeBudgets, places, placesQuota, phoneNumbers, voucherAttempts, and
+    // anything else.
     match /{document=**} {
       allow read, write: if false;
     }

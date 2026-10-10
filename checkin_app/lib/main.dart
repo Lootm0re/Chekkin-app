@@ -268,7 +268,12 @@ class ProfileScreen extends StatelessWidget {
               const SizedBox(height: 8),
               Text('Username: @${data['username']}', style: const TextStyle(fontSize: 18)),
               const SizedBox(height: 8),
-              Text('Points: ${data['points']}', style: const TextStyle(fontSize: 18)),
+              Text('Points to spend: ${data['points']}', style: const TextStyle(fontSize: 18)),
+              const SizedBox(height: 8),
+              Text(
+                'Points earned in total: ${data['lifetimePoints'] ?? data['points']}',
+                style: const TextStyle(fontSize: 18),
+              ),
               const SizedBox(height: 24),
               OutlinedButton.icon(
                 icon: const Icon(Icons.people),

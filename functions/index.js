@@ -117,6 +117,8 @@ exports.publishProfilePicture = onObjectFinalized({ region: 'us-east1' }, async 
   logger.info('Published profile picture', { uid });
 });
 
+// The leaderboard ranks by lifetimePoints (added below). points, the
+// spendable balance, is only kept for app builds that still rank by it.
 const PUBLIC_PROFILE_FIELDS = ['name', 'username', 'points'];
 
 // Same as PropertyCategoryIds in the avatar_maker package. Each avatar part is
@@ -142,6 +144,7 @@ function publicProfileOf(uid, userData) {
   for (const field of PUBLIC_PROFILE_FIELDS) {
     if (userData[field] !== undefined) profile[field] = userData[field];
   }
+  profile.lifetimePoints = lifetimePointsOf(userData);
   // The photo and avatar are shown unless the user has hidden them.
   // profileImage says which to show when both exist: 'avatar' or 'photo'.
   if (userData.avatarHidden !== true) {
@@ -569,6 +572,25 @@ function useBudget(tx, db, placeId) {
   tx.set(budgetRef(db, placeId), { placeId, month: monthKey(Date.now()), used: FieldValue.increment(1) }, { merge: true });
 }
 
+/**
+ * Points ever earned, which the leaderboard ranks by. Unlike points, it never
+ * goes down when points are spent. Users from before it existed count their
+ * points until scripts/backfill-lifetime-points.js or their next award sets it.
+ */
+function lifetimePointsOf(userData) {
+  return typeof userData.lifetimePoints === 'number' ? userData.lifetimePoints : userData.points ?? 0;
+}
+
+/** The user-document fields that award [points] to [userDoc]'s user, raising both balances. */
+function awardFields(userDoc, points) {
+  return {
+    points: FieldValue.increment(points),
+    lifetimePoints: typeof userDoc.get('lifetimePoints') === 'number'
+      ? FieldValue.increment(points)
+      : lifetimePointsOf(userDoc.data()) + points,
+  };
+}
+
 function partnerPointsLeftToday(userDoc) {
   const today = userDoc.get('partnerPointsToday');
   const used = today?.day === dayKey(Date.now()) ? today.points ?? 0 : 0;
@@ -584,7 +606,7 @@ function awardPartnerPoints(tx, userRef, userDoc, points) {
   const given = Math.min(points, left);
   if (given > 0) {
     tx.update(userRef, {
-      points: FieldValue.increment(given),
+      ...awardFields(userDoc, given),
       partnerPointsToday: { day: dayKey(Date.now()), points: DAILY_PARTNER_POINTS_CAP - left + given },
     });
   }
@@ -805,7 +827,7 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
 
     const base = checkInPoints(tier, budgetDoc);
     const points = tier ? awardPartnerPoints(tx, userRef, userDoc, base) : base;
-    if (!tier) tx.update(userRef, { points: FieldValue.increment(points) });
+    if (!tier) tx.update(userRef, awardFields(userDoc, points));
     if (tier) useBudget(tx, db, placeId);
 
     const now = FieldValue.serverTimestamp();
@@ -1100,6 +1122,39 @@ async function currentBusinessCode(db, placeId, { retire = false } = {}) {
   });
 }
 
+/** Wrong codes so far in [attempts]' lockout window (a codeAttempts or voucherAttempts document). */
+function codeFailuresOf(attempts, now) {
+  const windowStart = attempts.exists ? attempts.get('windowStart')?.toMillis() ?? 0 : 0;
+  const inWindow = now - windowStart < CODE_LOCKOUT_MINUTES * 60 * 1000;
+  return { windowStart, inWindow, failures: inWindow ? attempts.get('failures') ?? 0 : 0 };
+}
+
+/** Counts a wrong code, returning what to tell the user (see throwWrongCode). */
+function countCodeFailure(tx, attemptsRef, { inWindow, failures }) {
+  if (inWindow) {
+    tx.update(attemptsRef, { failures: FieldValue.increment(1) });
+  } else {
+    tx.set(attemptsRef, { windowStart: FieldValue.serverTimestamp(), failures: 1 });
+  }
+  return { triesLeft: MAX_CODE_FAILURES - failures - 1 };
+}
+
+/** The lockout result if [failures] has reached MAX_CODE_FAILURES, else null. */
+function codeLockout({ windowStart, failures }, now) {
+  if (failures < MAX_CODE_FAILURES) return null;
+  return { locked: true, minutesLeft: Math.ceil((windowStart + CODE_LOCKOUT_MINUTES * 60 * 1000 - now) / 60000) };
+}
+
+function throwWrongCode(result, lockedMessage, wrongMessage) {
+  if (result.locked || result.triesLeft === 0) {
+    const minutes = result.minutesLeft ?? CODE_LOCKOUT_MINUTES;
+    throw new HttpsError('resource-exhausted',
+      `${lockedMessage} Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+  }
+  throw new HttpsError('invalid-argument',
+    `${wrongMessage} ${result.triesLeft} ${result.triesLeft === 1 ? 'try' : 'tries'} left.`);
+}
+
 /**
  * Throws unless [code] is the place's current code (or an expired one still
  * in its grace period), and uses it up. Wrong codes are counted per user and
@@ -1116,7 +1171,6 @@ async function useBusinessCode(db, uid, place, code) {
   const secretRef = db.collection('businessSecrets').doc(place.id);
   const businessRef = db.collection('businesses').doc(place.id);
   const attemptsRef = db.collection('users').doc(uid).collection('codeAttempts').doc(place.id);
-  const lockoutMs = CODE_LOCKOUT_MINUTES * 60 * 1000;
   const lifetimeMs = BUSINESS_CODE_LIFETIME_MINUTES * 60 * 1000;
 
   // In a transaction so simultaneous guesses are all counted, and two
@@ -1125,13 +1179,9 @@ async function useBusinessCode(db, uid, place, code) {
     const [attempts, secretDoc] = await Promise.all([tx.get(attemptsRef), tx.get(secretRef)]);
     const secret = readSecret(secretDoc, place.id);
     const now = Date.now();
-    const windowStart = attempts.exists ? attempts.get('windowStart')?.toMillis() ?? 0 : 0;
-    const inWindow = now - windowStart < lockoutMs;
-    const failures = inWindow ? attempts.get('failures') ?? 0 : 0;
-
-    if (failures >= MAX_CODE_FAILURES) {
-      return { locked: true, minutesLeft: Math.ceil((windowStart + lockoutMs - now) / 60000) };
-    }
+    const failures = codeFailuresOf(attempts, now);
+    const lockout = codeLockout(failures, now);
+    if (lockout) return lockout;
 
     const seq = secretDoc.get('seq') ?? 0;
     const issuedAt = secretDoc.get('issuedAt')?.toMillis() ?? null;
@@ -1149,23 +1199,12 @@ async function useBusinessCode(db, uid, place, code) {
       return { correct: true };
     }
 
-    if (inWindow) {
-      tx.update(attemptsRef, { failures: FieldValue.increment(1) });
-    } else {
-      tx.set(attemptsRef, { windowStart: FieldValue.serverTimestamp(), failures: 1 });
-    }
-    return { triesLeft: MAX_CODE_FAILURES - failures - 1 };
+    return countCodeFailure(tx, attemptsRef, failures);
   });
 
   if (result.correct) return;
   logger.info('Wrong business code', { uid, placeId: place.id, result });
-  if (result.locked || result.triesLeft === 0) {
-    const minutes = result.minutesLeft ?? CODE_LOCKOUT_MINUTES;
-    throw new HttpsError('resource-exhausted',
-      `Too many wrong codes for ${place.name}. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
-  }
-  throw new HttpsError('invalid-argument',
-    `That code isn't right or has already been used. ${result.triesLeft} ${result.triesLeft === 1 ? 'try' : 'tries'} left.`);
+  throwWrongCode(result, `Too many wrong codes for ${place.name}.`, 'That code isn\'t right or has already been used.');
 }
 
 /** Throws unless the caller manages this approved business; returns its document. */
@@ -1304,6 +1343,255 @@ exports.getBusinessStats = onCall(async (request) => {
     groupCheckIns: groupCount,
     averageGroupSize: groupCount ? Math.round((groupMembers / groupCount) * 10) / 10 : null,
   };
+});
+
+// ---------------------------------------------------------------------------
+// Rewards
+//
+// Users spend points on rewards from the catalog in rewards/{rewardId}
+// (scripts/rewards-catalog.js). Only partner discounts can be redeemed so
+// far: type 'partner_discount', for discountPercent off at a partner place of
+// the reward's category, or only at partnerPlaceId if it's set. The partner
+// must be approved and have a tier (all tiers are paid) when the voucher is
+// issued.
+//
+// redeemReward takes the points and issues a voucher in vouchers/{code},
+// valid for the reward's validDays. The user shows the voucher screen to
+// staff, and the owner enters its code in verifyVoucher, which uses it up.
+// Wrong codes there count towards a lockout per owner (voucherAttempts/{uid}),
+// like check-in codes.
+//
+// Taps of Redeem carry a requestId, and users/{uid}/redemptions/{requestId}
+// remembers the voucher it issued, so a double tap or a retry after a lost
+// response gets the same voucher instead of paying twice.
+// ---------------------------------------------------------------------------
+
+// No 0/O or 1/I, so codes read out loud or typed from a screen come out right.
+const VOUCHER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const VOUCHER_CODE_LENGTH = 8;
+
+function newVoucherCode() {
+  let code = '';
+  for (let i = 0; i < VOUCHER_CODE_LENGTH; i++) {
+    code += VOUCHER_CODE_ALPHABET[crypto.randomInt(VOUCHER_CODE_ALPHABET.length)];
+  }
+  return code;
+}
+
+/** A typed voucher code, uppercased, without spaces or dashes, or null if it can't be one. */
+function readVoucherCode(value) {
+  const code = typeof value === 'string' ? value.replace(/[\s-]/g, '').toUpperCase() : '';
+  return new RegExp(`^[${VOUCHER_CODE_ALPHABET}]{${VOUCHER_CODE_LENGTH}}$`).test(code) ? code : null;
+}
+
+function readRequestId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(value)) {
+    throw new HttpsError('invalid-argument', 'Please update the app to redeem rewards.');
+  }
+  return value;
+}
+
+function readRewardId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value)) {
+    throw new HttpsError('invalid-argument', 'Choose a reward.');
+  }
+  return value;
+}
+
+/** Throws unless [rewardDoc] is an active partner discount; returns its fields. */
+function readPartnerDiscount(rewardDoc) {
+  const reward = rewardDoc.exists ? rewardDoc.data() : null;
+  if (!reward || reward.active !== true) {
+    throw new HttpsError('failed-precondition', 'This reward isn\'t available.');
+  }
+  if (reward.type !== 'partner_discount' || !Number.isInteger(reward.pointsCost) || reward.pointsCost <= 0 ||
+      !Number.isInteger(reward.validDays) || reward.validDays <= 0 ||
+      !Number.isInteger(reward.discountPercent) || reward.discountPercent <= 0 || reward.discountPercent > 100) {
+    logger.error('Reward is set up wrong', { rewardId: rewardDoc.id, reward });
+    throw new HttpsError('failed-precondition', 'This reward isn\'t available.');
+  }
+  return reward;
+}
+
+/** Whether vouchers for [reward] can be issued for [businessDoc]'s place. */
+function rewardWorksAt(reward, businessDoc) {
+  return partnerTier(businessDoc) !== null
+    && (!reward.partnerPlaceId || reward.partnerPlaceId === businessDoc.id)
+    && (!reward.category || reward.category === businessDoc.get('category'));
+}
+
+function voucherResult(voucher) {
+  return {
+    code: voucher.code,
+    rewardName: voucher.rewardName,
+    discountPercent: voucher.discountPercent,
+    placeName: voucher.placeName,
+    username: voucher.username,
+    expiresAt: voucher.expiresAt.toMillis(),
+  };
+}
+
+/** Partner places where a reward can be used, to choose from before redeeming it. */
+exports.rewardPartners = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to redeem rewards.');
+  }
+  const db = getFirestore();
+  const rewardId = readRewardId(request.data?.rewardId);
+  const reward = readPartnerDiscount(await db.collection('rewards').doc(rewardId).get());
+
+  let query = db.collection('businesses').where('status', '==', 'approved');
+  if (reward.category) query = query.where('category', '==', reward.category);
+  const businesses = reward.partnerPlaceId
+    ? [await db.collection('businesses').doc(reward.partnerPlaceId).get()]
+    : (await query.get()).docs;
+  const places = businesses
+    .filter((b) => rewardWorksAt(reward, b))
+    .map((b) => ({ placeId: b.id, placeName: b.get('placeName'), category: b.get('category') }))
+    .sort((a, b) => String(a.placeName).localeCompare(String(b.placeName)));
+  return { places };
+});
+
+/** Spends the caller's points on a partner discount at the chosen place and issues a voucher. */
+exports.redeemReward = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to redeem rewards.');
+  }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'redeemReward');
+  const rewardId = readRewardId(request.data?.rewardId);
+  const placeId = readPlaceId(request.data?.placeId);
+  const requestId = readRequestId(request.data?.requestId);
+
+  const userRef = db.collection('users').doc(uid);
+  const rewardRef = db.collection('rewards').doc(rewardId);
+  const businessRef = db.collection('businesses').doc(placeId);
+  const redemptionRef = userRef.collection('redemptions').doc(requestId);
+
+  // In one transaction, so the points can only be spent once, and the
+  // voucher exists if and only if they were.
+  const result = await db.runTransaction(async (tx) => {
+    const [userDoc, rewardDoc, businessDoc, redemptionDoc] = await Promise.all([
+      tx.get(userRef), tx.get(rewardRef), tx.get(businessRef), tx.get(redemptionRef),
+    ]);
+
+    if (redemptionDoc.exists) {
+      const earlier = await tx.get(db.collection('vouchers').doc(redemptionDoc.get('code')));
+      return { voucher: earlier.data(), repeated: true };
+    }
+
+    if (!userDoc.exists || userDoc.get('phoneVerified') !== true) {
+      throw new HttpsError('failed-precondition', 'Verify your phone number before redeeming rewards.');
+    }
+    const reward = readPartnerDiscount(rewardDoc);
+    if (!rewardWorksAt(reward, businessDoc)) {
+      throw new HttpsError('failed-precondition', 'This reward can\'t be used at that place.');
+    }
+    const points = userDoc.get('points') ?? 0;
+    if (points < reward.pointsCost) {
+      throw new HttpsError('failed-precondition',
+        `${reward.name} costs ${reward.pointsCost} points. You have ${points}.`);
+    }
+
+    // Codes are random, so a clash is very unlikely, but check anyway.
+    let code;
+    for (let i = 0; i < 3 && !code; i++) {
+      const candidate = newVoucherCode();
+      if (!(await tx.get(db.collection('vouchers').doc(candidate))).exists) code = candidate;
+    }
+    if (!code) throw new HttpsError('aborted', 'Couldn\'t make a voucher code. Please try again.');
+
+    const now = Date.now();
+    const voucher = {
+      code,
+      userId: uid,
+      username: userDoc.get('username') ?? null,
+      partnerPlaceId: placeId,
+      placeName: businessDoc.get('placeName') ?? null,
+      rewardId,
+      rewardName: reward.name ?? null,
+      discountPercent: reward.discountPercent,
+      pointsCost: reward.pointsCost,
+      createdAt: Timestamp.fromMillis(now),
+      expiresAt: Timestamp.fromMillis(now + reward.validDays * 24 * 3600 * 1000),
+      usedAt: null,
+    };
+    // Only the spendable balance goes down. Users from before lifetimePoints
+    // get it set first, so their spent points still count on the leaderboard.
+    tx.update(userRef, {
+      points: FieldValue.increment(-reward.pointsCost),
+      ...(typeof userDoc.get('lifetimePoints') === 'number' ? {} : { lifetimePoints: points }),
+    });
+    tx.set(db.collection('vouchers').doc(code), voucher);
+    tx.set(redemptionRef, { code, createdAt: voucher.createdAt });
+    return { voucher, repeated: false };
+  });
+
+  logger.info('redeemReward', { uid, rewardId, placeId, code: result.voucher.code, repeated: result.repeated });
+  return voucherResult(result.voucher);
+});
+
+/**
+ * For owners: checks a voucher a customer shows at one of the owner's places
+ * and uses it up. Returns the discount and the customer's username, to match
+ * against the voucher screen.
+ */
+exports.verifyVoucher = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage your business.');
+  }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'verifyVoucher');
+  const code = readVoucherCode(request.data?.code);
+  if (!code) {
+    throw new HttpsError('invalid-argument', `Enter the ${VOUCHER_CODE_LENGTH}-character code from the voucher.`);
+  }
+
+  const attemptsRef = db.collection('voucherAttempts').doc(uid);
+  const voucherRef = db.collection('vouchers').doc(code);
+
+  // In a transaction so simultaneous guesses are all counted, and a voucher
+  // can only be used once.
+  const result = await db.runTransaction(async (tx) => {
+    const [attempts, voucherDoc] = await Promise.all([tx.get(attemptsRef), tx.get(voucherRef)]);
+    const now = Date.now();
+    const failures = codeFailuresOf(attempts, now);
+    const lockout = codeLockout(failures, now);
+    if (lockout) return lockout;
+
+    // Another partner's voucher counts as a wrong code, so owners can't
+    // probe for codes issued elsewhere.
+    const businessDoc = voucherDoc.exists
+      ? await tx.get(db.collection('businesses').doc(voucherDoc.get('partnerPlaceId')))
+      : null;
+    if (!businessDoc?.exists || businessDoc.get('ownerUid') !== uid) {
+      return countCodeFailure(tx, attemptsRef, failures);
+    }
+    if (businessDoc.get('status') !== 'approved') {
+      throw new HttpsError('failed-precondition', 'Your registration for this place isn\'t approved.');
+    }
+
+    const voucher = voucherDoc.data();
+    if (voucher.usedAt) {
+      throw new HttpsError('failed-precondition', `This voucher was already used ${formatDay(voucher.usedAt.toMillis())}.`);
+    }
+    if (voucher.expiresAt.toMillis() <= now) {
+      throw new HttpsError('failed-precondition', `This voucher expired ${formatDay(voucher.expiresAt.toMillis())}.`);
+    }
+    tx.update(voucherRef, { usedAt: Timestamp.fromMillis(now), usedBy: uid });
+    return { voucher };
+  });
+
+  if (!result.voucher) {
+    logger.info('Wrong voucher code', { uid, result });
+    throwWrongCode(result, 'Too many wrong voucher codes.', 'That code isn\'t a voucher for your place.');
+  }
+  logger.info('verifyVoucher', { uid, code, placeId: result.voucher.partnerPlaceId });
+  const { discountPercent, username, rewardName, placeName } = result.voucher;
+  return { discountPercent, username, rewardName, placeName };
 });
 
 // ---------------------------------------------------------------------------

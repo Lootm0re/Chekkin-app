@@ -193,9 +193,25 @@ test('a valid check-in awards points and records it', async () => {
 
   const user = await db.doc('users/u1').get();
   assert.equal(user.get('points'), 5);
+  assert.equal(user.get('lifetimePoints'), 5);
   assert.equal(user.get('lastCheckIn.placeName'), 'Test Park');
   const checkIns = await db.collection('checkIns').where('uid', '==', 'u1').get();
   assert.equal(checkIns.size, 1);
   assert.equal(checkIns.docs[0].get('placeId'), PLACES.park.id);
   assert.equal((await db.doc(`users/u1/placeCheckIns/${PLACES.park.id}`).get()).get('recent').length, 1);
+});
+
+test('a check-in raises lifetimePoints too, starting from the points of users from before it existed', async () => {
+  await db.doc('users/old').set({ name: 'old', username: 'old', phoneVerified: true, points: 100 });
+  await checkIn('old', PLACES.park);
+  let user = await db.doc('users/old').get();
+  assert.equal(user.get('points'), 105);
+  assert.equal(user.get('lifetimePoints'), 105);
+
+  // Partner points too, once the field exists.
+  await addPartner(PLACES.restaurant);
+  await checkIn('old', PLACES.restaurant, {}, { code: await currentCode(PLACES.restaurant) });
+  user = await db.doc('users/old').get();
+  assert.equal(user.get('points'), 130);
+  assert.equal(user.get('lifetimePoints'), 130);
 });

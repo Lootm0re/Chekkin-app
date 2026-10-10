@@ -54,6 +54,17 @@ class BusinessScreen extends StatelessWidget {
                   ),
                 ),
               for (var doc in docs) _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
+              if (docs.any((doc) => (doc.data() as Map)['status'] == 'approved'))
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.confirmation_number),
+                    label: const Text('Verify voucher'),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const _VerifyVoucherScreen()),
+                    ),
+                  ),
+                ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
                 icon: const Icon(Icons.add_business),
@@ -418,6 +429,116 @@ class _Stat extends StatelessWidget {
           Text(label, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center),
         ],
       ),
+    );
+  }
+}
+
+/// For staff: enter the code from a customer's voucher screen. A valid code
+/// is used up at once, and the discount and the customer's username are shown
+/// to compare with their screen. Wrong codes count towards a lockout.
+class _VerifyVoucherScreen extends StatefulWidget {
+  const _VerifyVoucherScreen();
+
+  @override
+  State<_VerifyVoucherScreen> createState() => _VerifyVoucherScreenState();
+}
+
+class _VerifyVoucherScreenState extends State<_VerifyVoucherScreen> {
+  final codeController = TextEditingController();
+  Map? accepted;
+  String? error;
+  bool isVerifying = false;
+
+  @override
+  void dispose() {
+    codeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _verify() async {
+    if (isVerifying) return;
+    setState(() {
+      isVerifying = true;
+      error = null;
+    });
+    try {
+      final response = await FirebaseFunctions.instance.httpsCallable('verifyVoucher').call({
+        'code': codeController.text,
+      });
+      if (mounted) setState(() => accepted = response.data);
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) setState(() => error = e.message ?? 'Couldn\'t check that voucher.');
+    } catch (e) {
+      debugPrint('Verifying voucher failed: $e');
+      if (mounted) setState(() => error = 'Couldn\'t check that voucher. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => isVerifying = false);
+    }
+  }
+
+  void _reset() {
+    codeController.clear();
+    setState(() {
+      accepted = null;
+      error = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    TextTheme text = Theme.of(context).textTheme;
+    Widget body;
+    if (accepted != null) {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle, color: Colors.green[700], size: 64),
+          const SizedBox(height: 8),
+          Text('${accepted!['discountPercent']}% off', style: text.displaySmall?.copyWith(fontWeight: FontWeight.bold)),
+          Text('${accepted!['rewardName'] ?? 'Voucher'} at ${accepted!['placeName']}', textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+          Text('@${accepted!['username']}', style: text.headlineSmall),
+          const SizedBox(height: 8),
+          const Text(
+            'The voucher is now used. Check the username and the ticking clock on the customer\'s screen.',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(onPressed: _reset, child: const Text('Check another voucher')),
+        ],
+      );
+    } else {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('Enter the 8-character code from the customer\'s voucher screen.', textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+          TextField(
+            controller: codeController,
+            autofocus: true,
+            textAlign: TextAlign.center,
+            textCapitalization: TextCapitalization.characters,
+            autocorrect: false,
+            enableSuggestions: false,
+            maxLength: 9, // with a space or dash in the middle
+            style: text.headlineMedium?.copyWith(letterSpacing: 4),
+            decoration: InputDecoration(border: const OutlineInputBorder(), errorText: error, errorMaxLines: 3),
+            onSubmitted: (_) => _verify(),
+          ),
+          const SizedBox(height: 8),
+          ElevatedButton(
+            onPressed: isVerifying ? null : _verify,
+            child: isVerifying
+                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Text('Verify and use'),
+          ),
+        ],
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Verify Voucher')),
+      body: Center(child: SingleChildScrollView(padding: const EdgeInsets.all(24), child: body)),
     );
   }
 }
