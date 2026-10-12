@@ -235,13 +235,15 @@ class _Header extends StatelessWidget {
         color: AppColors.sky,
         child: Stack(
           children: [
-            const Positioned(right: -50, top: -40, child: DecorCircle(size: 180, color: AppColors.yellow)),
+            // The circles sit beside the picture, clear of the title, name
+            // and chips.
+            Positioned(right: -50, top: top - 40, child: const DecorCircle(size: 180, color: AppColors.yellow)),
             Positioned(
-              left: -40,
-              bottom: -60,
-              child: DecorCircle(size: 150, color: Colors.white.withValues(alpha: 0.22)),
+              left: -50,
+              top: top + 64,
+              child: DecorCircle(size: 110, color: Colors.white.withValues(alpha: 0.22)),
             ),
-            const Positioned(left: 40, top: 90, child: DecorCircle(size: 26, color: AppColors.coral)),
+            Positioned(left: 70, top: top + 124, child: const DecorCircle(size: 22, color: AppColors.coral)),
             Padding(
               padding: EdgeInsets.fromLTRB(20, top + 16, 20, 28),
               child: Column(

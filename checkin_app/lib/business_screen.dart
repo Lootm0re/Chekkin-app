@@ -117,20 +117,31 @@ class _MintHeader extends StatelessWidget {
         color: AppColors.mint,
         child: Stack(
           children: [
-            const Positioned(right: -40, top: -50, child: DecorCircle(size: 170, color: AppColors.yellow)),
-            Positioned(left: -50, bottom: -70, child: DecorCircle(size: 160, color: Colors.white.withValues(alpha: 0.25))),
-            const Positioned(right: 36, bottom: 14, child: DecorCircle(size: 24, color: AppColors.coral)),
+            // All circles stay in the back button's row, above the title, so
+            // none sits under the text.
+            Positioned(right: -50, top: top - 120, child: const DecorCircle(size: 170, color: AppColors.yellow)),
+            Positioned(
+              left: 72,
+              top: top + 14,
+              child: DecorCircle(size: 36, color: Colors.white.withValues(alpha: 0.3)),
+            ),
+            Positioned(left: 120, top: top + 26, child: const DecorCircle(size: 14, color: AppColors.coral)),
             Padding(
               padding: EdgeInsets.fromLTRB(8, top + 8, 20, 30),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (Navigator.of(context).canPop())
-                    IconButton(
-                      tooltip: 'Back',
-                      icon: const Icon(Icons.arrow_back_rounded),
-                      onPressed: () => Navigator.of(context).maybePop(),
-                    ),
+                  // The row is kept without a back button too, for the circles.
+                  SizedBox(
+                    height: 48,
+                    child: Navigator.of(context).canPop()
+                        ? IconButton(
+                            tooltip: 'Back',
+                            icon: const Icon(Icons.arrow_back_rounded),
+                            onPressed: () => Navigator.of(context).maybePop(),
+                          )
+                        : null,
+                  ),
                   Padding(
                     padding: const EdgeInsets.only(left: 12),
                     child: Column(

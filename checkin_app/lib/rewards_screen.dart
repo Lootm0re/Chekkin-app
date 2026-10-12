@@ -189,8 +189,10 @@ class _PointsCard extends StatelessWidget {
         color: AppColors.purple,
         child: Stack(
           children: [
-            const Positioned(right: -36, top: -44, child: DecorCircle(size: 150, color: AppColors.coral)),
-            Positioned(right: 60, bottom: -50, child: DecorCircle(size: 110, color: Colors.white.withValues(alpha: 0.12))),
+            // Kept to the corners, clear of the text: the top one above the
+            // points, the bottom one right of the progress numbers.
+            const Positioned(right: -40, top: -60, child: DecorCircle(size: 140, color: AppColors.coral)),
+            Positioned(right: -40, bottom: -60, child: DecorCircle(size: 110, color: Colors.white.withValues(alpha: 0.12))),
             Padding(
               padding: const EdgeInsets.all(22),
               child: Column(
