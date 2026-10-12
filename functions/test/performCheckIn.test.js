@@ -26,8 +26,10 @@ const { GoogleAuth } = require('google-auth-library');
 GoogleAuth.prototype.getClient = async () => ({ getAccessToken: async () => ({ token: 'test' }) });
 
 const realFetch = globalThis.fetch;
+let placesApiCalls = 0;
 globalThis.fetch = async (url, options) => {
   const match = /^https:\/\/places\.googleapis\.com\/v1\/places\/([^/?]+)$/.exec(String(url));
+  if (match) placesApiCalls++;
   if (!match) {
     if (String(url).includes('googleapis.com')) throw new Error(`Unexpected request in tests: ${url}`);
     return realFetch(url, options);
@@ -323,4 +325,57 @@ test('a check-in raises lifetimePoints too, starting from the points of users fr
   user = await db.doc('users/old').get();
   assert.equal(user.get('points'), 130);
   assert.equal(user.get('lifetimePoints'), 130);
+});
+
+// --- The emulator's stand-in places --------------------------------------------------
+
+// Stand-in coordinates ~11 km from the real Test Park, as the emulator seed
+// would write them.
+const FAKE_PARK = { ...PLACES.park, latitude: 59.4300, longitude: 18.0686 };
+
+async function addStandInPlace(place) {
+  await db.doc(`emulatorPlaces/${place.id}`).set({
+    name: place.name, latitude: place.latitude, longitude: place.longitude,
+    primaryType: place.primaryType, types: [place.primaryType, 'point_of_interest'],
+  });
+}
+
+test('production mode ignores the stand-in: the real lookup is used and the fake coordinates are refused', async () => {
+  assert.notEqual(process.env.FUNCTIONS_EMULATOR, 'true', 'these tests run like deployed functions');
+  await addUser('u1');
+  await addStandInPlace(FAKE_PARK);
+
+  // At the stand-in's coordinates, asking for the stand-in: the real Places
+  // lookup answers, and the real park is ~11 km away.
+  let calls = placesApiCalls;
+  await assert.rejects(checkIn('u1', FAKE_PARK, {}, { useEmulatorPlaces: true }),
+    { code: 'failed-precondition', message: /Too far away/ });
+  assert.equal(placesApiCalls, calls + 1, 'the real Places API was asked');
+
+  // At the real park, with the same flag: an ordinary check-in, real lookup.
+  calls = placesApiCalls;
+  const result = await checkIn('u1', PLACES.park, {}, { useEmulatorPlaces: true });
+  assert.equal(result.pointsEarned, 5);
+  assert.equal(placesApiCalls, calls + 1);
+});
+
+test('in the functions emulator, only calls from the emulator app use the stand-in places', async () => {
+  await addUser('u1');
+  await addUser('u2');
+  await addStandInPlace(FAKE_PARK);
+  const before = process.env.FUNCTIONS_EMULATOR;
+  process.env.FUNCTIONS_EMULATOR = 'true';
+  try {
+    const calls = placesApiCalls;
+    // From the emulator app: the stand-in's coordinates count, no Places API call.
+    const result = await checkIn('u1', FAKE_PARK, {}, { useEmulatorPlaces: true });
+    assert.equal(result.pointsEarned, 5);
+    assert.equal(placesApiCalls, calls, 'the Places API was not asked');
+    // Without the flag, Places stays off in the emulator, as before.
+    await assert.rejects(checkIn('u2', FAKE_PARK), { code: 'unavailable', message: /turned off in the emulators/ });
+    assert.equal(placesApiCalls, calls);
+  } finally {
+    if (before === undefined) delete process.env.FUNCTIONS_EMULATOR;
+    else process.env.FUNCTIONS_EMULATOR = before;
+  }
 });

@@ -660,13 +660,11 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
     });
     try {
       final position = await getPositionWithPermission();
-      List data = useEmulators
-          ? emulatorNearbyPlaces(position.latitude, position.longitude)
-          : (await cloudFunctions.httpsCallable('nearbyPlaces').call({
-              'latitude': position.latitude,
-              'longitude': position.longitude,
-            }))
-              .data['places'];
+      List data = (await cloudFunctions.httpsCallable('nearbyPlaces').call(withEmulatorPlaces({
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+      })))
+          .data['places'];
       if (!mounted) return;
       setState(() {
         places = data.map((p) => CheckInPlace.fromMap(p)).where((p) => p.category.isBusiness).toList();
@@ -700,7 +698,7 @@ class _RegisterBusinessScreenState extends State<_RegisterBusinessScreen> {
 
     setState(() => submittingPlaceId = place.id);
     try {
-      await cloudFunctions.httpsCallable('requestBusinessClaim').call({'placeId': place.id});
+      await cloudFunctions.httpsCallable('requestBusinessClaim').call(withEmulatorPlaces({'placeId': place.id}));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${place.name} has been sent for approval.')),

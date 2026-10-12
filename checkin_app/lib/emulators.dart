@@ -1,5 +1,3 @@
-import 'dart:math' show cos, pi;
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -51,33 +49,16 @@ Future<void> connectToEmulators() async {
   );
 }
 
-/// Made-up places around [latitude], [longitude] for the emulator build,
-/// whose nearbyPlaces can't search Places, so the map can be reviewed: one of
-/// each kind, two of them in check-in range, and grey non-partners. The
-/// restaurant is the seeded Pizzeria La Fleur (emulator-seed.js). Same shape
-/// as nearbyPlaces' places.
-List<Map<String, Object?>> emulatorNearbyPlaces(double latitude, double longitude) {
-  const metersPerDegree = 111195.0;
-  Map<String, Object?> place(String id, String name, String category, double north, double east,
-          {String? tier, int points = 0}) =>
-      {
-        'id': id,
-        'name': name,
-        'category': category,
-        'latitude': latitude + north / metersPerDegree,
-        'longitude': longitude + east / (metersPerDegree * cos(latitude * pi / 180)),
-        'partner': tier != null,
-        'tier': tier,
-        'points': points,
-        'budgetUsedUp': false,
-      };
-  return [
-    place('ChIJXYvnQaR-X0YR4f368TTVJbU', 'Pizzeria La Fleur', 'restaurant', 8, 0, tier: 'platinum', points: 75),
-    place('emulatorPark', 'Test Park', 'touristic', -12, -10, points: 5),
-    place('emulatorCafe', 'Café Test', 'cafe', 60, 70, tier: 'premium', points: 50),
-    place('emulatorHotel', 'Hotel Test', 'hotel', 110, -90, tier: 'diamond', points: 100),
-    place('emulatorShop', 'Corner Shop', 'shop', -70, 40),
-    place('emulatorDeli', 'Deli Test', 'shop', 40, 110, tier: 'basic', points: 25),
-    place('emulatorBakery', 'Bakery Test', 'cafe', 30, -80),
-  ];
-}
+/// The middle of the emulator's test places: scripts/emulator-seed.js puts
+/// them around it (Pizzeria La Fleur 8 m north), and the map's "DEV: Go to
+/// the test places" teleports here. Keep in sync with TEST_AREA there.
+const double emulatorTestAreaLatitude = 59.3165;
+const double emulatorTestAreaLongitude = 18.0715;
+
+/// [data] for a callable that looks places up (nearbyPlaces, performCheckIn,
+/// requestBusinessClaim). In the emulator build it asks the functions
+/// emulator for its stand-in places (see useEmulatorPlaces in
+/// functions/index.js); normal builds send [data] unchanged, and as
+/// [useEmulators] is a compile-time constant they don't contain the flag.
+Map<String, Object?> withEmulatorPlaces(Map<String, Object?> data) =>
+    useEmulators ? {...data, 'useEmulatorPlaces': true} : data;

@@ -194,13 +194,11 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _loadNearbyPlaces(Position position) async {
     setState(() => isLoadingPlaces = true);
     try {
-      List places = useEmulators
-          ? emulatorNearbyPlaces(position.latitude, position.longitude)
-          : (await functions.httpsCallable('nearbyPlaces').call({
-              'latitude': position.latitude,
-              'longitude': position.longitude,
-            }))
-              .data['places'];
+      List places = (await functions.httpsCallable('nearbyPlaces').call(withEmulatorPlaces({
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+      })))
+          .data['places'];
       await _pinIcons;
       if (!mounted) return;
 
@@ -314,12 +312,12 @@ class _MapScreenState extends State<MapScreen> {
 
     try {
       HttpsCallable callable = functions.httpsCallable('performCheckIn');
-      final response = await callable.call({
+      final response = await callable.call(withEmulatorPlaces({
         'placeId': place.id,
         ..._deviceFix(position),
         if (place.requiresCode) 'code': code ?? '',
         if (place.requiresCode && friendUids.isNotEmpty) 'friendUids': friendUids,
-      });
+      }));
       String? groupId = response.data['groupId'];
       if (mounted) {
         setState(() {
@@ -557,6 +555,8 @@ class _MapScreenState extends State<MapScreen> {
                         child: Text(
                           devFakePosition != null
                               ? 'DEV: Using a pretend location. Long-press to move it.'
+                              : useEmulators
+                              ? 'DEV: Tap the flask for the test places, or long-press the map.'
                               : 'DEV: Long-press the map to pretend you\'re there.',
                           style: AppText.body(size: 14, weight: FontWeight.w700, color: Colors.white),
                           textAlign: TextAlign.center,
@@ -607,6 +607,13 @@ class _MapScreenState extends State<MapScreen> {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          // The emulator's test places are in one spot (emulator-seed.js).
+          if (useEmulators && devTools)
+            IconButton(
+              tooltip: 'DEV: Go to the test places',
+              icon: const Icon(Icons.science_rounded, color: AppColors.purple),
+              onPressed: () => _devTeleport(const LatLng(emulatorTestAreaLatitude, emulatorTestAreaLongitude)),
+            ),
           if (devFakePosition != null)
             IconButton(
               tooltip: 'DEV: Back to real location',

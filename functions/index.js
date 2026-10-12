@@ -245,10 +245,53 @@ const CHECK_IN_COOLDOWN_HOURS = 24; // per user, per place
 const MAX_CHECK_INS_PER_PLACE_PER_WEEK = 2; // per user, rolling 7 days
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
-async function placesRequest(path, { method = 'GET', fieldMask, body }) {
+/**
+ * Whether to answer Places lookups from the emulator's stand-in places
+ * (emulatorPlaces/{placeId}, written by scripts/emulator-seed.js) instead of
+ * the Places API. Only when both hold: the functions run in the Firebase
+ * emulator (FUNCTIONS_EMULATOR, never set in deployed functions), and the
+ * call comes from the app's emulator build (USE_EMULATORS), which sends
+ * useEmulatorPlaces. Anywhere else the flag is ignored.
+ */
+function useEmulatorPlaces(request) {
+  return process.env.FUNCTIONS_EMULATOR === 'true' && request?.data?.useEmulatorPlaces === true;
+}
+
+/** A Places API answer for [path] made from the emulator's stand-in places. */
+async function emulatorPlacesResponse(path, body) {
+  const db = getFirestore();
+  const asPlace = (doc) => ({
+    id: doc.id,
+    displayName: { text: doc.get('name') },
+    location: { latitude: doc.get('latitude'), longitude: doc.get('longitude') },
+    types: doc.get('types'),
+    primaryType: doc.get('primaryType'),
+  });
+  const single = /^places\/([^/:]+)$/.exec(path);
+  if (single) {
+    const doc = await db.collection('emulatorPlaces').doc(single[1]).get();
+    if (!doc.exists) throw new HttpsError('not-found', 'That place could not be found.');
+    return asPlace(doc);
+  }
+  if (path === 'places:searchNearby') {
+    const { center, radius } = body.locationRestriction.circle;
+    const places = (await db.collection('emulatorPlaces').get()).docs
+      .map((doc) => ({ doc, d: distanceMeters(center.latitude, center.longitude, doc.get('latitude'), doc.get('longitude')) }))
+      .filter((p) => p.d <= radius)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 20)
+      .map((p) => asPlace(p.doc));
+    return { places };
+  }
+  throw new HttpsError('unimplemented', `The emulator has no stand-in for ${path}.`);
+}
+
+async function placesRequest(request, path, { method = 'GET', fieldMask, body }) {
   // In the emulators (functions/scripts/emulators.sh), so a local test never
-  // runs up the real project's Places bill with someone's own credentials.
+  // runs up the real project's Places bill with someone's own credentials:
+  // the app's emulator build gets the stand-in places, anything else nothing.
   if (process.env.FUNCTIONS_EMULATOR === 'true') {
+    if (useEmulatorPlaces(request)) return emulatorPlacesResponse(path, body);
     throw new HttpsError('unavailable', 'Places searches are turned off in the emulators.');
   }
   const client = await googleAuth.getClient();
@@ -681,7 +724,7 @@ exports.nearbyPlaces = onCall(LOCATION_CALLABLE, async (request) => {
     await useNearbyPlacesQuota(getFirestore(), request.auth.uid);
   }
 
-  const data = await placesRequest('places:searchNearby', {
+  const data = await placesRequest(request, 'places:searchNearby', {
     method: 'POST',
     fieldMask: PLACE_FIELDS.map((f) => `places.${f}`).join(','),
     body: {
@@ -772,7 +815,7 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   const device = readDeviceFix(request.data);
   if (!devTester) throwIfUntrustedFix(device);
 
-  const place = toPlace(await placesRequest(`places/${placeId}`, {
+  const place = toPlace(await placesRequest(request, `places/${placeId}`, {
     fieldMask: PLACE_FIELDS.join(','),
   }));
   if (!isCheckInEligible(place.types)) {
@@ -1301,7 +1344,7 @@ exports.requestBusinessClaim = onCall(async (request) => {
   const db = getFirestore();
   await throwUnlessFromApp(db, uid, request, 'requestBusinessClaim');
   const placeId = readPlaceId(request.data?.placeId);
-  const place = toPlace(await placesRequest(`places/${placeId}`, { fieldMask: PLACE_FIELDS.join(',') }));
+  const place = toPlace(await placesRequest(request, `places/${placeId}`, { fieldMask: PLACE_FIELDS.join(',') }));
   if (!BUSINESS_CATEGORIES.includes(place.category)) {
     throw new HttpsError('failed-precondition', 'Only restaurants, cafés, hotels and shops can be registered.');
   }

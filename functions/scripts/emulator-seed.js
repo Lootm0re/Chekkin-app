@@ -3,8 +3,9 @@
 // (a customer with 12,000 points) and @partner2 (owns Trattoria Test, Basic),
 // the rewards catalog, an expired voucher and another partner's voucher, and
 // made-up partners in every tier with check-ins this month and last month,
-// for the business leaderboard, and individual check-ins at La Fleur and
-// Trattoria for the owners' Today / Last 7 days tiles. Clears the emulators first, so it can be
+// for the business leaderboard, individual check-ins at La Fleur and
+// Trattoria for the owners' Today / Last 7 days tiles, and fixed map
+// places (MAP_PLACES) so check-ins work in the emulator. Clears the emulators first, so it can be
 // re-run to start over. All three accounts use the password below.
 //
 // Run by scripts/emulators.sh, or while the emulators are running:
@@ -117,6 +118,40 @@ async function addCheckInHistory(place, tier, { today, week, older }) {
   await batch.commit();
 }
 
+// Where the map's test places are: the functions emulator answers place
+// lookups from emulatorPlaces/{placeId} for the app's emulator build (see
+// useEmulatorPlaces in index.js), and the map's "DEV: Go to the test
+// places" teleports to TEST_AREA. Keep in sync with emulatorTestAreaLatitude
+// and emulatorTestAreaLongitude in checkin_app/lib/emulators.dart.
+const TEST_AREA = { latitude: 59.3165, longitude: 18.0715 };
+
+// [id, name, Places primaryType, metres north and east of TEST_AREA]. Partners
+// get their tier from businesses/{id}; La Fleur and Test Park are in
+// check-in range of TEST_AREA (22 m), the others a short teleport away.
+const MAP_PLACES = [
+  [LA_FLEUR.id, LA_FLEUR.name, 'restaurant', 8, 0],
+  ['emulatorPark', 'Test Park', 'park', -12, -10],
+  [TRATTORIA.id, TRATTORIA.name, 'restaurant', -45, 60],
+  ['emulatorBasic1', 'Kaffebaren Söder', 'cafe', 60, -50],
+  ['emulatorPremium1', 'Café Lyktan', 'cafe', 95, 40],
+  ['emulatorPlatinum1', 'Restaurang Fyren', 'restaurant', -85, -65],
+  ['emulatorDiamond1', 'Grand Hotell Norr', 'lodging', 140, 110],
+  ['emulatorShop', 'Corner Shop', 'store', -60, 130], // not a partner: a grey pin
+];
+
+async function addMapPlaces() {
+  const metersPerDegree = 111195;
+  for (const [id, name, primaryType, north, east] of MAP_PLACES) {
+    await db.doc(`emulatorPlaces/${id}`).set({
+      name,
+      latitude: TEST_AREA.latitude + north / metersPerDegree,
+      longitude: TEST_AREA.longitude + east / (metersPerDegree * Math.cos(TEST_AREA.latitude * Math.PI / 180)),
+      primaryType,
+      types: [primaryType, 'point_of_interest', 'establishment'],
+    });
+  }
+}
+
 /** Check-ins this month and last, as placeBudgets (what the budget and the business leaderboard count). */
 async function addCheckIns(placeId, thisMonth, lastMonth) {
   for (const [month, used] of [[monthKey(0), thisMonth], [monthKey(1), lastMonth]]) {
@@ -172,6 +207,7 @@ async function main() {
     await addPartner({ id, name }, `owner-${id}`, tier, category);
     await addCheckIns(id, thisMonth, lastMonth);
   }
+  await addMapPlaces();
   for (const [id, reward] of Object.entries(CATALOG)) await db.doc(`rewards/${id}`).set(reward);
   // Expired yesterday, at @gaian's place.
   await addVoucher('EXPDTEST', LA_FLEUR, { expiresInDays: -1 });
@@ -184,6 +220,7 @@ async function main() {
     '4 check-ins today, 22 in 7 days, 41 since approval)');
   console.log(`  partner2@chekkin.test  owns ${TRATTORIA.name} (Basic, 5th of 6)`);
   console.log(`Vouchers: EXPDTEST (expired, ${LA_FLEUR.name}), THERTEST (valid, ${TRATTORIA.name}).`);
+  console.log('Map: test places around the "DEV: Go to the test places" button (flask) on the map.');
 }
 
 main().catch((err) => { console.error(err.message); process.exit(1); });
