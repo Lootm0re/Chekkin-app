@@ -72,11 +72,12 @@ List<Map<String, Object?>> emulatorNearbyPlaces(double latitude, double longitud
         'budgetUsedUp': false,
       };
   return [
-    place('ChIJXYvnQaR-X0YR4f368TTVJbU', 'Pizzeria La Fleur', 'restaurant', 8, 0, tier: 'basic', points: 25),
+    place('ChIJXYvnQaR-X0YR4f368TTVJbU', 'Pizzeria La Fleur', 'restaurant', 8, 0, tier: 'platinum', points: 75),
     place('emulatorPark', 'Test Park', 'touristic', -12, -10, points: 5),
     place('emulatorCafe', 'Café Test', 'cafe', 60, 70, tier: 'premium', points: 50),
     place('emulatorHotel', 'Hotel Test', 'hotel', 110, -90, tier: 'diamond', points: 100),
     place('emulatorShop', 'Corner Shop', 'shop', -70, 40),
+    place('emulatorDeli', 'Deli Test', 'shop', 40, 110, tier: 'basic', points: 25),
     place('emulatorBakery', 'Bakery Test', 'cafe', 30, -80),
   ];
 }

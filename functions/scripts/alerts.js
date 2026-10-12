@@ -1,5 +1,6 @@
-// Alerts raised by the checkInSpikes function: places with an unusual number
-// of check-ins in an hour. Uses the firebase CLI's login, so run
+// Alerts raised by the functions: places with an unusual number of check-ins
+// in an hour (checkInSpikes), and places that hit the hourly limit on
+// creating check-in codes (createBusinessCodes). Uses the firebase CLI's login, so run
 // `firebase login` first.
 //
 //   node scripts/alerts.js list [count]   (newest first, default 20)
@@ -18,7 +19,10 @@ async function list(db, count) {
       alert.get('type'),
       alert.get('placeId'),
       alert.get('placeName'),
-      `${alert.get('lastHour')} check-ins in an hour (usually ${alert.get('hourlyAverage')})`,
+      alert.get('type') === 'codeHourlyLimit'
+        ? `hit the limit of ${alert.get('limit')} codes an hour (asked for ${alert.get('requested')}, ` +
+          `${alert.get('createdThisHour')} created, by ${alert.get('uid')})`
+        : `${alert.get('lastHour')} check-ins in an hour (usually ${alert.get('hourlyAverage')})`,
     ].join('  '));
   }
 }

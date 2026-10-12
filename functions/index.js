@@ -524,11 +524,16 @@ function lastCheckInOf(place) {
 // own place. Days and months follow TIME_ZONE.
 // ---------------------------------------------------------------------------
 
+// Lowest to highest: the business leaderboard merges small leagues upwards
+// in this order. Keep in sync with scripts/partner-tiers.js and the app's
+// tierLabels (check_in_place.dart).
 const TIERS = {
   basic: { label: 'Basic', points: 25, monthlyBudget: 100 },
   premium: { label: 'Premium', points: 50, monthlyBudget: 500 },
+  platinum: { label: 'Platinum', points: 75, monthlyBudget: 1500 },
   diamond: { label: 'Diamond', points: 100, monthlyBudget: null }, // unlimited
 };
+const TIER_ORDER = Object.keys(TIERS);
 const TOURISTIC_POINTS = 5;
 const DAILY_PARTNER_POINTS_CAP = 3 * TIERS.diamond.points;
 const GROUP_REPEAT_DAYS = 7;
@@ -1051,22 +1056,34 @@ exports.joinGroup = onCall(LOCATION_CALLABLE, async (request) => {
 //
 // A restaurant, café, hotel or shop can claim its place (requestBusinessClaim); the
 // claim waits in businesses/{placeId} until approved with
-// scripts/business-claims.js, which also creates the place's secret in
-// businessSecrets/{placeId}. Clients can never read that collection.
+// scripts/business-claims.js, which also creates businessSecrets/{placeId}.
+// Clients can never read that collection.
 //
-// The owner's app shows a 6-digit code (getBusinessCode). Each code works for
-// one customer: once used, the next code in the sequence takes its place.
-// Codes are derived from the secret and a sequence number (RFC 4226 HOTP), so
-// no codes are stored. An unused code expires after
-// BUSINESS_CODE_LIFETIME_MINUTES, and the owner can retire it early
-// (newBusinessCode). businesses/{placeId}.codeSeq changes whenever the code
-// does, so the owner's screen knows to fetch the new one.
+// The owner creates check-in codes (createBusinessCodes): 1, 10 or 50 at a
+// time, 8 digits each, stored in businessSecrets/{placeId}/codes/{code}. Each
+// code works for one customer and expires BUSINESS_CODE_LIFETIME_HOURS after
+// it was created if unused. Creating codes costs nothing: only check-ins
+// count against the monthly budget. As a safety limit a place can create at
+// most MAX_CODES_PER_HOUR codes an hour; hitting it logs a warning and
+// writes an alert (scripts/alerts.js). businesses/{placeId}.codeSeq changes
+// whenever codes are created or used, so the owner's screen knows to fetch
+// the list again (getBusinessCodes).
+//
+// Before stored codes, each place had one 6-digit code at a time, derived
+// from businessSecrets/{placeId}.secret and .seq (RFC 4226 HOTP) and valid
+// for LEGACY_CODE_LIFETIME_MINUTES. No new ones are issued, but one that was
+// showing when this changed is still accepted until it expires.
 // ---------------------------------------------------------------------------
 
-const BUSINESS_CODE_DIGITS = 6;
-const BUSINESS_CODE_LIFETIME_MINUTES = 10;
-// An expired (not used or retired) code still works this long after expiry,
-// in case it changed while the customer was typing.
+const BUSINESS_CODE_DIGITS = 8; // keep in sync with PlaceScreen.codeLength
+const BUSINESS_CODE_LIFETIME_HOURS = 24;
+const CODE_BATCH_SIZES = [1, 10, 50];
+const MAX_CODES_PER_HOUR = 1000; // per place
+const MAX_LISTED_CODES = 200; // getBusinessCodes lists the newest this many
+const LEGACY_CODE_DIGITS = 6;
+const LEGACY_CODE_LIFETIME_MINUTES = 10;
+// An expired (not used or retired) legacy code still works this long after
+// expiry, in case it changed while the customer was typing.
 const CODE_GRACE_SECONDS = 60;
 const MAX_CODE_FAILURES = 5; // per user, per place, per lockout window
 const CODE_LOCKOUT_MINUTES = 60;
@@ -1077,7 +1094,7 @@ function businessCodeAt(secret, counter) {
   const hmac = crypto.createHmac('sha1', Buffer.from(secret, 'base64')).update(message).digest();
   const offset = hmac[hmac.length - 1] & 0xf;
   const value = hmac.readUInt32BE(offset) & 0x7fffffff;
-  return String(value % 10 ** BUSINESS_CODE_DIGITS).padStart(BUSINESS_CODE_DIGITS, '0');
+  return String(value % 10 ** LEGACY_CODE_DIGITS).padStart(LEGACY_CODE_DIGITS, '0');
 }
 
 function codesMatch(a, b) {
@@ -1093,38 +1110,71 @@ function readSecret(secretDoc, placeId) {
   return secret;
 }
 
+function businessCodesRef(db, placeId) {
+  return db.collection('businessSecrets').doc(placeId).collection('codes');
+}
+
+function newBusinessCodeValue() {
+  return String(crypto.randomInt(10 ** BUSINESS_CODE_DIGITS)).padStart(BUSINESS_CODE_DIGITS, '0');
+}
+
+/** 'YYYY-MM-DDTHH' in UTC: the hour the code safety limit counts in. */
+function hourKey(ms) {
+  return new Date(ms).toISOString().slice(0, 13);
+}
+
 /**
- * Returns the place's current code, starting a new one if it has expired or
- * [retire] is set. Retiring (the owner's "New code") gives no grace period.
+ * Creates [count] new codes for [placeId], all different from any code the
+ * place has had. Returns { codes, expiresAt }, or { limited, createdThisHour }
+ * without creating any if that would pass MAX_CODES_PER_HOUR.
  */
-async function currentBusinessCode(db, placeId, { retire = false } = {}) {
-  const secretRef = db.collection('businessSecrets').doc(placeId);
+async function createBusinessCodesFor(db, placeId, count) {
+  const codesRef = businessCodesRef(db, placeId);
   const businessRef = db.collection('businesses').doc(placeId);
-  const lifetimeMs = BUSINESS_CODE_LIFETIME_MINUTES * 60 * 1000;
 
   return db.runTransaction(async (tx) => {
-    const secretDoc = await tx.get(secretRef);
-    const secret = readSecret(secretDoc, placeId);
     const now = Date.now();
-    let seq = secretDoc.get('seq') ?? 0;
-    let issuedAt = secretDoc.get('issuedAt')?.toMillis() ?? null;
+    const quotaRef = db.collection('businessSecrets').doc(placeId).collection('codeQuota').doc(hourKey(now));
+    const quota = await tx.get(quotaRef);
+    const createdThisHour = quota.exists ? quota.get('count') ?? 0 : 0;
+    if (createdThisHour + count > MAX_CODES_PER_HOUR) return { limited: true, createdThisHour };
 
-    if (retire || issuedAt === null || now - issuedAt >= lifetimeMs) {
-      const expiredUnused = !retire && issuedAt !== null;
-      seq += 1;
-      issuedAt = now;
-      tx.update(secretRef, {
-        seq,
-        issuedAt: Timestamp.fromMillis(now),
-        graceSeq: expiredUnused ? seq - 1 : null,
-        graceUntil: expiredUnused
-          ? Timestamp.fromMillis(secretDoc.get('issuedAt').toMillis() + lifetimeMs + CODE_GRACE_SECONDS * 1000)
-          : null,
-      });
-      tx.update(businessRef, { codeSeq: seq });
+    // Draw new codes until none clashes with an earlier one (rare: 1 in
+    // 100 million each).
+    const codes = new Set();
+    for (let round = 0; codes.size < count && round < 5; round++) {
+      const candidates = [];
+      while (codes.size + candidates.length < count) {
+        const code = newBusinessCodeValue();
+        if (!codes.has(code) && !candidates.includes(code)) candidates.push(code);
+      }
+      const existing = await tx.getAll(...candidates.map((c) => codesRef.doc(c)));
+      candidates.forEach((code, i) => { if (!existing[i].exists) codes.add(code); });
     }
-    return { code: businessCodeAt(secret, seq), expiresAt: issuedAt + lifetimeMs, seq };
+    if (codes.size < count) throw new HttpsError('internal', 'Couldn\'t create new codes. Please try again.');
+
+    const expiresAt = Timestamp.fromMillis(now + BUSINESS_CODE_LIFETIME_HOURS * 3600 * 1000);
+    for (const code of codes) {
+      tx.create(codesRef.doc(code), { createdAt: Timestamp.fromMillis(now), expiresAt, usedAt: null, usedBy: null });
+    }
+    tx.set(quotaRef, { hour: hourKey(now), count: FieldValue.increment(count) }, { merge: true });
+    tx.update(businessRef, { codeSeq: FieldValue.increment(1) });
+    return { codes: [...codes], expiresAt: expiresAt.toMillis(), createdThisHour: createdThisHour + count };
   });
+}
+
+/** Logs and raises an alert (once an hour per place) when a place hits the code safety limit. */
+async function reportCodeLimit(db, uid, placeId, placeName, requested, createdThisHour) {
+  const now = Date.now();
+  const details = { placeId, placeName, uid, requested, createdThisHour, limit: MAX_CODES_PER_HOUR, hour: hourKey(now) };
+  logger.warn('Business code hourly limit reached', details);
+  try {
+    await db.collection('alerts').doc(`${placeId}_${hourKey(now)}_codeLimit`).create({
+      type: 'codeHourlyLimit', ...details, createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    if (err.code !== 6) throw err; // ALREADY_EXISTS: flagged this hour already
+  }
 }
 
 /** Wrong codes so far in [attempts]' lockout window (a codeAttempts or voucherAttempts document). */
@@ -1161,46 +1211,64 @@ function throwWrongCode(result, lockedMessage, wrongMessage) {
 }
 
 /**
- * Throws unless [code] is the place's current code (or an expired one still
- * in its grace period), and uses it up. Wrong codes are counted per user and
- * place, and lock that place for CODE_LOCKOUT_MINUTES after
- * MAX_CODE_FAILURES.
+ * Whether [typed] (6 digits) is the place's legacy HOTP code, still in its
+ * lifetime or grace period, and uses it up if so. No new legacy code takes
+ * its place.
+ */
+function useLegacyCode(tx, secretDoc, secretRef, businessRef, place, typed, now) {
+  if (!secretDoc.exists) return false;
+  const secret = readSecret(secretDoc, place.id);
+  const seq = secretDoc.get('seq') ?? 0;
+  const issuedAt = secretDoc.get('issuedAt')?.toMillis() ?? null;
+  const graceSeq = secretDoc.get('graceSeq');
+  const graceUntil = secretDoc.get('graceUntil')?.toMillis() ?? 0;
+
+  if (issuedAt !== null && now - issuedAt < LEGACY_CODE_LIFETIME_MINUTES * 60 * 1000 &&
+      codesMatch(businessCodeAt(secret, seq), typed)) {
+    tx.update(secretRef, { seq: seq + 1, issuedAt: null, graceSeq: null, graceUntil: null });
+    tx.update(businessRef, { codeSeq: FieldValue.increment(1) });
+    return true;
+  }
+  if (typeof graceSeq === 'number' && now < graceUntil && codesMatch(businessCodeAt(secret, graceSeq), typed)) {
+    tx.update(secretRef, { graceSeq: null, graceUntil: null });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Throws unless [code] is one of the place's unused, unexpired codes (or its
+ * legacy 6-digit code, until that expires), and uses it up. Wrong codes are
+ * counted per user and place, and lock that place for CODE_LOCKOUT_MINUTES
+ * after MAX_CODE_FAILURES.
  */
 async function useBusinessCode(db, uid, place, code) {
   const typed = typeof code === 'string' ? code.replace(/\s/g, '') : '';
-  if (!new RegExp(`^\\d{${BUSINESS_CODE_DIGITS}}$`).test(typed)) {
+  const legacy = new RegExp(`^\\d{${LEGACY_CODE_DIGITS}}$`).test(typed);
+  if (!legacy && !new RegExp(`^\\d{${BUSINESS_CODE_DIGITS}}$`).test(typed)) {
     throw new HttpsError('invalid-argument',
       `Enter the ${BUSINESS_CODE_DIGITS}-digit code from the staff at ${place.name}.`);
   }
 
   const secretRef = db.collection('businessSecrets').doc(place.id);
   const businessRef = db.collection('businesses').doc(place.id);
+  const codeRef = legacy ? null : businessCodesRef(db, place.id).doc(typed);
   const attemptsRef = db.collection('users').doc(uid).collection('codeAttempts').doc(place.id);
-  const lifetimeMs = BUSINESS_CODE_LIFETIME_MINUTES * 60 * 1000;
 
   // In a transaction so simultaneous guesses are all counted, and two
   // customers can't both use the same code.
   const result = await db.runTransaction(async (tx) => {
-    const [attempts, secretDoc] = await Promise.all([tx.get(attemptsRef), tx.get(secretRef)]);
-    const secret = readSecret(secretDoc, place.id);
+    const [attempts, codeDoc] = await Promise.all([tx.get(attemptsRef), legacy ? tx.get(secretRef) : tx.get(codeRef)]);
     const now = Date.now();
     const failures = codeFailuresOf(attempts, now);
     const lockout = codeLockout(failures, now);
     if (lockout) return lockout;
 
-    const seq = secretDoc.get('seq') ?? 0;
-    const issuedAt = secretDoc.get('issuedAt')?.toMillis() ?? null;
-    const graceSeq = secretDoc.get('graceSeq');
-    const graceUntil = secretDoc.get('graceUntil')?.toMillis() ?? 0;
-
-    if (issuedAt !== null && now - issuedAt < lifetimeMs && codesMatch(businessCodeAt(secret, seq), typed)) {
-      // Used: the next code replaces it.
-      tx.update(secretRef, { seq: seq + 1, issuedAt: Timestamp.fromMillis(now), graceSeq: null, graceUntil: null });
-      tx.update(businessRef, { codeSeq: seq + 1 });
-      return { correct: true };
-    }
-    if (typeof graceSeq === 'number' && now < graceUntil && codesMatch(businessCodeAt(secret, graceSeq), typed)) {
-      tx.update(secretRef, { graceSeq: null, graceUntil: null });
+    if (legacy) {
+      if (useLegacyCode(tx, codeDoc, secretRef, businessRef, place, typed, now)) return { correct: true };
+    } else if (codeDoc.exists && codeDoc.get('usedAt') === null && codeDoc.get('expiresAt').toMillis() > now) {
+      tx.update(codeRef, { usedAt: Timestamp.fromMillis(now), usedBy: uid });
+      tx.update(businessRef, { codeSeq: FieldValue.increment(1) });
       return { correct: true };
     }
 
@@ -1209,7 +1277,7 @@ async function useBusinessCode(db, uid, place, code) {
 
   if (result.correct) return;
   logger.info('Wrong business code', { uid, placeId: place.id, result });
-  throwWrongCode(result, `Too many wrong codes for ${place.name}.`, 'That code isn\'t right or has already been used.');
+  throwWrongCode(result, `Too many wrong codes for ${place.name}.`, 'That code isn\'t right, has expired or has already been used.');
 }
 
 /** Throws unless the caller manages this approved business; returns its document. */
@@ -1269,33 +1337,62 @@ exports.requestBusinessClaim = onCall(async (request) => {
   return { status };
 });
 
-/** Returns the current check-in code for a place the caller manages. */
-exports.getBusinessCode = onCall(async (request) => {
-  const uid = request.auth?.uid;
-  if (!uid) {
-    throw new HttpsError('unauthenticated', 'Sign in to see your business code.');
-  }
-  const db = getFirestore();
-  await throwUnlessFromApp(db, uid, request, 'getBusinessCode');
-  const placeId = readPlaceId(request.data?.placeId);
-  const businessDoc = await readOwnBusiness(db, uid, placeId);
-  const { code, expiresAt, seq } = await currentBusinessCode(db, placeId);
-  return { code, expiresAt, seq, placeName: businessDoc.get('placeName') };
-});
-
-/** Retires the current code at once (e.g. if it was seen by someone else) and returns a new one. */
-exports.newBusinessCode = onCall(async (request) => {
+/** Creates 1, 10 or 50 check-in codes for a place the caller manages. */
+exports.createBusinessCodes = onCall(async (request) => {
   const uid = request.auth?.uid;
   if (!uid) {
     throw new HttpsError('unauthenticated', 'Sign in to manage your business.');
   }
   const db = getFirestore();
-  await throwUnlessFromApp(db, uid, request, 'newBusinessCode');
+  await throwUnlessFromApp(db, uid, request, 'createBusinessCodes');
+  const placeId = readPlaceId(request.data?.placeId);
+  const count = request.data?.count;
+  if (!CODE_BATCH_SIZES.includes(count)) {
+    throw new HttpsError('invalid-argument', `Create ${CODE_BATCH_SIZES.join(', ')} codes at a time.`);
+  }
+  const businessDoc = await readOwnBusiness(db, uid, placeId);
+
+  const result = await createBusinessCodesFor(db, placeId, count);
+  if (result.limited) {
+    await reportCodeLimit(db, uid, placeId, businessDoc.get('placeName'), count, result.createdThisHour);
+    const left = MAX_CODES_PER_HOUR - result.createdThisHour;
+    const minutes = 60 - new Date().getUTCMinutes();
+    throw new HttpsError('resource-exhausted',
+      `For safety, a place can create up to ${MAX_CODES_PER_HOUR.toLocaleString('en-US')} codes an hour. ` +
+      (left > 0 ? `You can create ${left} more this hour, or ` : 'You can ') +
+      `create more in ${minutes} minute${minutes === 1 ? '' : 's'}. Codes you already have still work.`);
+  }
+  logger.info('createBusinessCodes', { uid, placeId, count, createdThisHour: result.createdThisHour });
+  return { codes: result.codes, expiresAt: result.expiresAt };
+});
+
+/**
+ * The unused, unexpired codes of a place the caller manages, newest first
+ * (at most MAX_LISTED_CODES), and how many there are in all.
+ */
+exports.getBusinessCodes = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to see your business codes.');
+  }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'getBusinessCodes');
   const placeId = readPlaceId(request.data?.placeId);
   const businessDoc = await readOwnBusiness(db, uid, placeId);
-  const { code, expiresAt, seq } = await currentBusinessCode(db, placeId, { retire: true });
-  logger.info('newBusinessCode', { uid, placeId, seq });
-  return { code, expiresAt, seq, placeName: businessDoc.get('placeName') };
+
+  const active = businessCodesRef(db, placeId)
+    .where('usedAt', '==', null)
+    .where('expiresAt', '>', Timestamp.now());
+  const [list, total] = await Promise.all([
+    active.orderBy('expiresAt', 'desc').limit(MAX_LISTED_CODES).get(),
+    active.count().get(),
+  ]);
+  return {
+    codes: list.docs.map((d) => ({ code: d.id, expiresAt: d.get('expiresAt').toMillis() })),
+    activeCount: total.data().count,
+    lifetimeHours: BUSINESS_CODE_LIFETIME_HOURS,
+    placeName: businessDoc.get('placeName'),
+  };
 });
 
 /**
@@ -1347,6 +1444,121 @@ exports.getBusinessStats = onCall(async (request) => {
     sinceApproval,
     groupCheckIns: groupCount,
     averageGroupSize: groupCount ? Math.round((groupMembers / groupCount) * 10) / 10 : null,
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Business leaderboard
+//
+// Partner places are ranked by check-ins this month: placeBudgets'
+// count, the same month (TIME_ZONE) and the same counting as the budget, so
+// every member of a group counts. Places are ranked in leagues by tier.
+// Going up from Basic, a tier with fewer than MIN_LEAGUE_SIZE places joins
+// the next tier up; if the highest league is still too small it joins the
+// one below, so nobody ranks alone. Owners only see the top
+// LEADERBOARD_TOP_ROWS of their league, their own place and the places
+// directly above and below it: names and counts, nothing else.
+// ---------------------------------------------------------------------------
+
+const MIN_LEAGUE_SIZE = 5;
+const LEADERBOARD_TOP_ROWS = 5;
+
+/** 'YYYY-MM' of the month before [month] ('YYYY-MM'). */
+function previousMonthKey(month) {
+  const [year, m] = month.split('-').map(Number);
+  return m === 1 ? `${year - 1}-12` : `${year}-${String(m - 1).padStart(2, '0')}`;
+}
+
+/** Splits [partners] ({ tier }) into leagues of at least MIN_LEAGUE_SIZE, by TIER_ORDER. */
+function leaguesOf(partners) {
+  const leagues = [];
+  let current = { tiers: [], places: [] };
+  for (const tier of TIER_ORDER) {
+    const places = partners.filter((p) => p.tier === tier);
+    if (places.length === 0) continue;
+    current.tiers.push(tier);
+    current.places.push(...places);
+    if (current.places.length >= MIN_LEAGUE_SIZE) {
+      leagues.push(current);
+      current = { tiers: [], places: [] };
+    }
+  }
+  if (current.places.length > 0) {
+    if (leagues.length === 0) {
+      leagues.push(current);
+    } else {
+      const last = leagues[leagues.length - 1];
+      last.tiers.push(...current.tiers);
+      last.places.push(...current.places);
+    }
+  }
+  return leagues;
+}
+
+/** [places] most check-ins first (then by name), with ranks; equal counts share a rank. */
+function rankPlaces(places, counts) {
+  const sorted = places
+    .map((p) => ({ ...p, checkIns: counts.get(p.id) ?? 0 }))
+    .sort((a, b) => b.checkIns - a.checkIns || String(a.placeName).localeCompare(String(b.placeName)));
+  sorted.forEach((p, i) => {
+    p.rank = i > 0 && p.checkIns === sorted[i - 1].checkIns ? sorted[i - 1].rank : i + 1;
+  });
+  return sorted;
+}
+
+async function checkInCounts(db, month) {
+  const budgets = await db.collection('placeBudgets').where('month', '==', month).get();
+  return new Map(budgets.docs.map((d) => [d.get('placeId'), d.get('used') ?? 0]));
+}
+
+/** This month's league table for a partner place the caller manages (see above). */
+exports.getBusinessLeaderboard = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to see the leaderboard.');
+  }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'getBusinessLeaderboard');
+  const placeId = readPlaceId(request.data?.placeId);
+  const businessDoc = await readOwnBusiness(db, uid, placeId);
+  if (!partnerTier(businessDoc)) {
+    throw new HttpsError('failed-precondition', 'The leaderboard is for partner places.');
+  }
+
+  const month = monthKey(Date.now());
+  const lastMonth = previousMonthKey(month);
+  const [approved, counts, lastCounts] = await Promise.all([
+    db.collection('businesses').where('status', '==', 'approved').get(),
+    checkInCounts(db, month),
+    checkInCounts(db, lastMonth),
+  ]);
+  const partners = approved.docs
+    .map((d) => ({ id: d.id, placeName: d.get('placeName') ?? 'Unnamed place', tier: partnerTier(d) }))
+    .filter((p) => p.tier);
+  const league = leaguesOf(partners).find((l) => l.places.some((p) => p.id === placeId));
+
+  const ranked = rankPlaces(league.places, counts);
+  const mine = ranked.findIndex((p) => p.id === placeId);
+  const row = (p) => p ? { rank: p.rank, placeName: p.placeName, checkIns: p.checkIns, isYou: p.id === placeId } : null;
+
+  // Last month, in this month's leagues: a winner had the most check-ins
+  // (ties share the win) and at least one.
+  const lastRanked = rankPlaces(league.places, lastCounts);
+  const lastMine = lastRanked.find((p) => p.id === placeId);
+  const lastMonthWinner = lastMine.rank === 1 && lastMine.checkIns > 0;
+
+  return {
+    month,
+    league: {
+      tiers: league.tiers,
+      label: league.tiers.map((t) => TIERS[t].label).join(' & '),
+      size: ranked.length,
+    },
+    top: ranked.slice(0, LEADERBOARD_TOP_ROWS).map(row),
+    you: row(ranked[mine]),
+    above: row(ranked[mine - 1]),
+    below: row(ranked[mine + 1]),
+    lastMonthWinner,
   };
 });
 

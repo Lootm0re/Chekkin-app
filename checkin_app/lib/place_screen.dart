@@ -51,7 +51,9 @@ class PlaceScreen extends StatefulWidget {
 }
 
 class _PlaceScreenState extends State<PlaceScreen> {
-  static const int codeLength = 6; // keep in sync with BUSINESS_CODE_DIGITS
+  static const int codeLength = 8; // keep in sync with BUSINESS_CODE_DIGITS
+  // The 6-digit codes from before still work until they expire (10 minutes).
+  static const int legacyCodeLength = 6;
 
   final TextEditingController codeController = TextEditingController();
 
@@ -133,7 +135,7 @@ class _PlaceScreenState extends State<PlaceScreen> {
                         Text('Code from the staff', style: AppText.heading(size: 20)),
                         const SizedBox(height: 4),
                         Text(
-                          'Ask the staff at ${place.name} for today\'s $codeLength-digit code.',
+                          'Ask the staff at ${place.name} for an $codeLength-digit check-in code.',
                           style: AppText.body(size: 15, color: AppColors.muted),
                         ),
                         const SizedBox(height: 12),
@@ -170,7 +172,8 @@ class _PlaceScreenState extends State<PlaceScreen> {
               child: ValueListenableBuilder<TextEditingValue>(
                 valueListenable: codeController,
                 builder: (context, code, _) {
-                  bool needsCode = code.text.trim().length != codeLength;
+                  int typed = code.text.trim().length;
+                  bool needsCode = typed != codeLength && typed != legacyCodeLength;
                   return ElevatedButton(
                     onPressed: isCheckingIn || needsCode ? null : _checkIn,
                     style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 60)),
@@ -415,7 +418,7 @@ class _CodeBoxesState extends State<CodeBoxes> {
                 return Row(
                   children: [
                     for (int i = 0; i < widget.length; i++) ...[
-                      if (i > 0) const SizedBox(width: 8),
+                      if (i > 0) SizedBox(width: widget.length > 6 ? 5 : 8),
                       Expanded(child: _box(i < text.length ? text[i] : '', i, text.length)),
                     ],
                   ],
@@ -457,14 +460,15 @@ class _CodeBoxesState extends State<CodeBoxes> {
       duration: const Duration(milliseconds: 120),
       decoration: BoxDecoration(
         color: AppColors.card,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(widget.length > 6 ? 14 : 18),
         border: Border.all(
           color: filled ? AppColors.purple : (next ? AppColors.purple.withValues(alpha: 0.45) : AppColors.lightPurple),
           width: filled ? 2.5 : 2,
         ),
       ),
       alignment: Alignment.center,
-      child: Text(digit, style: AppText.heading(size: 28)),
+      // Smaller digits when there are more boxes (8-digit codes).
+      child: Text(digit, style: AppText.heading(size: widget.length > 6 ? 24 : 28)),
     );
   }
 }

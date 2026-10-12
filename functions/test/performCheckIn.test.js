@@ -45,7 +45,7 @@ globalThis.fetch = async (url, options) => {
 
 // --- Setup ------------------------------------------------------------------
 
-const { performCheckIn } = require('../index.js');
+const { performCheckIn, createBusinessCodes } = require('../index.js');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 
 const db = getFirestore();
@@ -62,14 +62,29 @@ async function addUser(uid) {
   await db.doc(`users/${uid}`).set({ name: uid, username: uid, phoneVerified: true, points: 0 });
 }
 
-async function addPartner(place) {
-  await db.doc(`businesses/${place.id}`).set({ status: 'approved', tier: 'basic', ownerUid: OWNER_UID, codeSeq: 1 });
+async function addPartner(place, tier = 'basic') {
+  await db.doc(`businesses/${place.id}`).set({ status: 'approved', tier, ownerUid: OWNER_UID, codeSeq: 1 });
   await db.doc(`businessSecrets/${place.id}`).set({
     secret: crypto.randomBytes(20).toString('base64'), seq: 1, issuedAt: Timestamp.now(),
   });
 }
 
-/** The place's current code, the same way the function derives it (HOTP). */
+/** Has the owner create [count] 8-digit codes for [place]; returns them. */
+async function newCodes(place, count = 1) {
+  const result = await createBusinessCodes.run({
+    auth: { uid: OWNER_UID, token: {} },
+    app: { appId: ANDROID_APP_ID },
+    data: { placeId: place.id, count },
+  });
+  return result.codes;
+}
+
+async function budgetUsed(place) {
+  const budgets = await db.collection('placeBudgets').where('placeId', '==', place.id).get();
+  return budgets.empty ? 0 : budgets.docs[0].get('used');
+}
+
+/** The place's legacy 6-digit code, the same way the function derives it (HOTP). */
 async function currentCode(place) {
   const doc = await db.doc(`businessSecrets/${place.id}`).get();
   const message = Buffer.alloc(8);
@@ -179,8 +194,102 @@ test('refuses a business code that was already used', async () => {
   const first = await checkIn('u1', PLACES.restaurant, {}, { code });
   assert.equal(first.pointsEarned, 25);
   await assert.rejects(checkIn('u2', PLACES.restaurant, {}, { code }),
-    { code: 'invalid-argument', message: /isn't right or has already been used/ });
+    { code: 'invalid-argument', message: /isn't right, has expired or has already been used/ });
   assert.equal((await db.doc('users/u2').get()).get('points'), 0);
+});
+
+test('8-digit codes from a batch each work once, and only check-ins count against the budget', async () => {
+  await addUser('u1');
+  await addUser('u2');
+  await addPartner(PLACES.restaurant);
+  const codes = await newCodes(PLACES.restaurant, 10);
+  assert.equal(codes.length, 10);
+  assert.ok(codes.every((c) => /^\d{8}$/.test(c)));
+  assert.equal(await budgetUsed(PLACES.restaurant), 0, 'creating codes costs nothing');
+
+  const first = await checkIn('u1', PLACES.restaurant, {}, { code: codes[3] });
+  assert.equal(first.pointsEarned, 25);
+  assert.equal(await budgetUsed(PLACES.restaurant), 1);
+  // Used up: nobody else can use it.
+  await assert.rejects(checkIn('u2', PLACES.restaurant, {}, { code: codes[3] }),
+    { code: 'invalid-argument', message: /isn't right, has expired or has already been used/ });
+  // Another code from the same batch still works.
+  await checkIn('u2', PLACES.restaurant, {}, { code: codes[7] });
+  assert.equal(await budgetUsed(PLACES.restaurant), 2);
+  const used = await db.doc(`businessSecrets/${PLACES.restaurant.id}/codes/${codes[7]}`).get();
+  assert.equal(used.get('usedBy'), 'u2');
+});
+
+test('an 8-digit code expires 24 hours after it was created', async () => {
+  await addUser('u1');
+  await addPartner(PLACES.restaurant);
+  const [code] = await newCodes(PLACES.restaurant);
+  const ref = db.doc(`businessSecrets/${PLACES.restaurant.id}/codes/${code}`);
+  const created = (await ref.get()).get('createdAt').toMillis();
+  assert.equal((await ref.get()).get('expiresAt').toMillis() - created, 24 * 3600 * 1000);
+
+  await ref.update({ expiresAt: Timestamp.fromMillis(Date.now() - 1000) });
+  await assert.rejects(checkIn('u1', PLACES.restaurant, {}, { code }),
+    { code: 'invalid-argument', message: /has expired/ });
+});
+
+test('a legacy 6-digit code still works until it expires, and no new one replaces it', async () => {
+  await addUser('u1');
+  await addUser('u2');
+  await addPartner(PLACES.restaurant);
+  const code = await currentCode(PLACES.restaurant);
+  await checkIn('u1', PLACES.restaurant, {}, { code });
+  const secret = await db.doc(`businessSecrets/${PLACES.restaurant.id}`).get();
+  assert.equal(secret.get('issuedAt'), null, 'no next legacy code is issued');
+  await assert.rejects(checkIn('u2', PLACES.restaurant, {}, { code: await currentCode(PLACES.restaurant) }),
+    { code: 'invalid-argument' });
+});
+
+test('a legacy 6-digit code is refused once its 10 minutes are over', async () => {
+  await addUser('u1');
+  await addPartner(PLACES.restaurant);
+  await db.doc(`businessSecrets/${PLACES.restaurant.id}`)
+    .update({ issuedAt: Timestamp.fromMillis(Date.now() - 11 * 60 * 1000) });
+  await assert.rejects(checkIn('u1', PLACES.restaurant, {}, { code: await currentCode(PLACES.restaurant) }),
+    { code: 'invalid-argument' });
+});
+
+test('the owner can\'t check in at their own place, even with a valid code', async () => {
+  await addUser(OWNER_UID);
+  await addPartner(PLACES.restaurant);
+  const [code] = await newCodes(PLACES.restaurant);
+  await assert.rejects(checkIn(OWNER_UID, PLACES.restaurant, {}, { code }),
+    { code: 'permission-denied', message: /since you manage it/ });
+  const doc = await db.doc(`businessSecrets/${PLACES.restaurant.id}/codes/${code}`).get();
+  assert.equal(doc.get('usedAt'), null, 'the code is not used up');
+});
+
+// --- Tiers -------------------------------------------------------------------------
+
+test('a platinum partner gives 75 points, and 5 once its 1,500 monthly check-ins are used', async () => {
+  await addUser('u1');
+  await addUser('u2');
+  await addPartner(PLACES.restaurant, 'platinum');
+  const [first, second] = await newCodes(PLACES.restaurant, 10);
+  assert.equal((await checkIn('u1', PLACES.restaurant, {}, { code: first })).pointsEarned, 75);
+
+  const budget = (await db.collection('placeBudgets').where('placeId', '==', PLACES.restaurant.id).get()).docs[0];
+  await budget.ref.update({ used: 1500 });
+  const late = await checkIn('u2', PLACES.restaurant, {}, { code: second });
+  assert.equal(late.pointsEarned, 5);
+  assert.equal(late.budgetUsedUp, true);
+});
+
+test('premium gives 50 and diamond 100 points', async () => {
+  await addUser('u1');
+  await addPartner(PLACES.restaurant, 'premium');
+  let [code] = await newCodes(PLACES.restaurant);
+  assert.equal((await checkIn('u1', PLACES.restaurant, {}, { code })).pointsEarned, 50);
+
+  await addUser('u2');
+  await db.doc(`businesses/${PLACES.restaurant.id}`).update({ tier: 'diamond' });
+  [code] = await newCodes(PLACES.restaurant);
+  assert.equal((await checkIn('u2', PLACES.restaurant, {}, { code })).pointsEarned, 100);
 });
 
 // --- Success ---------------------------------------------------------------------

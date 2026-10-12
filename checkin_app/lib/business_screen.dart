@@ -4,8 +4,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
-import 'backend.dart';
 import 'app_only.dart';
+import 'backend.dart';
+import 'business_tools.dart';
 import 'check_in_place.dart';
 import 'emulators.dart';
 import 'location_access.dart';
@@ -15,6 +16,9 @@ import 'theme.dart';
 /// it's a partner, show customers the current check-in code.
 class BusinessScreen extends StatelessWidget {
   const BusinessScreen({super.key});
+
+  /// Approved with a partner tier: customers can check in.
+  static bool _isPartner(Map data) => data['status'] == 'approved' && tierLabels.containsKey(data['tier']);
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +85,13 @@ class BusinessScreen extends StatelessWidget {
                         ),
                       ),
                     ),
-                  for (var doc in docs) _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
+                  for (var doc in docs) ...[
+                    _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
+                    if (_isPartner(doc.data() as Map)) ...[
+                      CheckInCodesCard(placeId: doc.id, codeSeq: (doc.data() as Map)['codeSeq']),
+                      BusinessLeagueCard(placeId: doc.id, codeSeq: (doc.data() as Map)['codeSeq']),
+                    ],
+                  ],
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
                     icon: const Icon(Icons.add_business_rounded),
@@ -94,9 +104,21 @@ class BusinessScreen extends StatelessWidget {
               ),
             );
           }
+          var partners = (snapshot.data?.docs ?? []).map((d) => d.data() as Map).where(_isPartner).toList();
           return ListView(
             padding: EdgeInsets.zero,
-            children: [const _MintHeader(), content],
+            children: [
+              _MintHeader(
+                chips: [
+                  for (var p in partners)
+                    tierChip(
+                      p['tier'],
+                      label: partners.length > 1 ? '${p['placeName']} · ${tierLabels[p['tier']]}' : null,
+                    ),
+                ],
+              ),
+              content,
+            ],
           );
         },
       ),
@@ -106,7 +128,10 @@ class BusinessScreen extends StatelessWidget {
 
 /// Mint header with decorative circles, a back button and the title.
 class _MintHeader extends StatelessWidget {
-  const _MintHeader();
+  /// The plans of the owner's partner places.
+  final List<Widget> chips;
+
+  const _MintHeader({this.chips = const []});
 
   @override
   Widget build(BuildContext context) {
@@ -153,6 +178,10 @@ class _MintHeader extends StatelessWidget {
                           'Check-in codes, vouchers and stats for your places.',
                           style: AppText.body(size: 16, weight: FontWeight.w700),
                         ),
+                        if (chips.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Wrap(spacing: 8, runSpacing: 8, children: chips),
+                        ],
                       ],
                     ),
                   ),
@@ -249,7 +278,7 @@ class _BusinessCard extends StatelessWidget {
               runSpacing: 8,
               children: [
                 if (partner)
-                  ColorChip(label: '$tier plan', color: AppColors.yellow, icon: Icons.workspace_premium_rounded)
+                  tierChip(data['tier'])
                 else
                   switch (status) {
                     'approved' => const ColorChip(
@@ -271,8 +300,6 @@ class _BusinessCard extends StatelessWidget {
               'approved' when partner => Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _BusinessCode(placeId: placeId, codeSeq: data['codeSeq']),
-                    const Divider(height: 36),
                     _BusinessStats(placeId: placeId, codeSeq: data['codeSeq']),
                   ],
                 ),
@@ -289,196 +316,6 @@ class _BusinessCard extends StatelessWidget {
             },
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// The current check-in code. Each code works for one customer; when it's
-/// used, expires or is retired, businesses/{placeId}.codeSeq changes and the
-/// new code is fetched.
-class _BusinessCode extends StatefulWidget {
-  final String placeId;
-  final int? codeSeq;
-
-  const _BusinessCode({required this.placeId, required this.codeSeq});
-
-  @override
-  State<_BusinessCode> createState() => _BusinessCodeState();
-}
-
-class _BusinessCodeState extends State<_BusinessCode> {
-  String? code;
-  int? seq;
-  DateTime? expiresAt;
-  String? error;
-  String? notice;
-  Timer? ticker;
-  Timer? noticeTimer;
-  bool isLoading = false;
-  bool isRetiring = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadCode();
-    // Redraws the countdown, and fetches a new code once this one expires.
-    ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (expiresAt != null && DateTime.now().isAfter(expiresAt!)) {
-        _loadCode();
-      }
-      setState(() {});
-    });
-  }
-
-  @override
-  void didUpdateWidget(_BusinessCode old) {
-    super.didUpdateWidget(old);
-    // A customer used the code (or it was retired elsewhere).
-    if (widget.codeSeq != null && seq != null && widget.codeSeq! > seq! && !isRetiring) {
-      _showNotice('Code used by a customer. Here\'s a new one.');
-      _loadCode();
-    }
-  }
-
-  @override
-  void dispose() {
-    ticker?.cancel();
-    noticeTimer?.cancel();
-    super.dispose();
-  }
-
-  void _showNotice(String message) {
-    noticeTimer?.cancel();
-    setState(() => notice = message);
-    noticeTimer = Timer(const Duration(seconds: 8), () {
-      if (mounted) setState(() => notice = null);
-    });
-  }
-
-  void _setCode(Map data) {
-    setState(() {
-      code = data['code'];
-      seq = data['seq'];
-      expiresAt = DateTime.fromMillisecondsSinceEpoch((data['expiresAt'] as num).toInt());
-      error = null;
-    });
-  }
-
-  Future<void> _loadCode() async {
-    if (isLoading) return;
-    isLoading = true;
-    try {
-      final response = await cloudFunctions.httpsCallable('getBusinessCode').call({
-        'placeId': widget.placeId,
-      });
-      if (mounted) _setCode(response.data);
-    } on FirebaseFunctionsException catch (e) {
-      if (mounted) setState(() => error = e.message ?? 'Couldn\'t load the code.');
-    } catch (e) {
-      debugPrint('Loading business code failed: $e');
-      if (mounted) setState(() => error = 'Couldn\'t load the code. Please check your connection.');
-    } finally {
-      isLoading = false;
-    }
-  }
-
-  Future<void> _retire() async {
-    setState(() => isRetiring = true);
-    try {
-      final response = await cloudFunctions.httpsCallable('newBusinessCode').call({
-        'placeId': widget.placeId,
-      });
-      if (!mounted) return;
-      _setCode(response.data);
-      _showNotice('The old code no longer works.');
-    } on FirebaseFunctionsException catch (e) {
-      if (mounted) _showNotice(e.message ?? 'Couldn\'t make a new code.');
-    } catch (e) {
-      debugPrint('Retiring business code failed: $e');
-      if (mounted) _showNotice('Couldn\'t make a new code. Please check your connection.');
-    } finally {
-      if (mounted) setState(() => isRetiring = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (code == null) {
-      if (error != null) {
-        return Row(
-          children: [
-            Expanded(child: Text(error!, style: AppText.body(size: 15))),
-            TextButton(onPressed: _loadCode, child: const Text('Retry')),
-          ],
-        );
-      }
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    Duration left = expiresAt!.difference(DateTime.now());
-    if (left.isNegative) left = Duration.zero;
-    String countdown = '${left.inMinutes}:${(left.inSeconds % 60).toString().padLeft(2, '0')}';
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
-      decoration: BoxDecoration(
-        color: AppColors.lightPurple,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Column(
-        children: [
-          Text('Check-in code for the next customer', style: AppText.body(size: 15, weight: FontWeight.w800)),
-          const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              color: AppColors.card,
-              borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
-            ),
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                '${code!.substring(0, 3)} ${code!.substring(3)}',
-                style: AppText.heading(size: 52).copyWith(
-                  letterSpacing: 6,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Works once. Expires in $countdown if unused.',
-            style: AppText.body(size: 14, color: AppColors.muted),
-            textAlign: TextAlign.center,
-          ),
-          if (notice != null)
-            Container(
-              margin: const EdgeInsets.only(top: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.lightMint,
-                borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.check_circle_rounded, color: AppColors.ink, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(notice!, style: AppText.body(size: 15, weight: FontWeight.w700))),
-                ],
-              ),
-            ),
-          const SizedBox(height: 4),
-          TextButton.icon(
-            onPressed: isRetiring ? null : _retire,
-            icon: isRetiring
-                ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.refresh_rounded),
-            label: const Text('New code'),
-          ),
-        ],
       ),
     );
   }

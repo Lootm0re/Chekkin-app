@@ -115,10 +115,22 @@ void main() {
         'tier': 'premium',
         'codeSeq': 1,
       });
-      fakes.functions.answer('getBusinessCode', {
-        'code': '123456',
-        'seq': 1,
-        'expiresAt': DateTime.now().add(const Duration(minutes: 10)).millisecondsSinceEpoch,
+      fakes.functions.answer('getBusinessCodes', {
+        'codes': [
+          {'code': '12345678', 'expiresAt': DateTime.now().add(const Duration(hours: 23)).millisecondsSinceEpoch},
+        ],
+        'activeCount': 1,
+        'lifetimeHours': 24,
+      });
+      fakes.functions.answer('getBusinessLeaderboard', {
+        'league': {'tiers': ['premium'], 'label': 'Premium', 'size': 1},
+        'top': [
+          {'rank': 1, 'placeName': 'Pizzeria La Fleur', 'checkIns': 1234, 'isYou': true},
+        ],
+        'you': {'rank': 1, 'placeName': 'Pizzeria La Fleur', 'checkIns': 1234, 'isYou': true},
+        'above': null,
+        'below': null,
+        'lastMonthWinner': false,
       });
       fakes.functions.answer('getBusinessStats', {
         'tierLabel': 'Premium',
@@ -152,8 +164,7 @@ void main() {
       expect(find.textContaining('/8'), findsNothing);
       await takeScreenshot(tester, 'business-verify-voucher');
 
-      // Stops the code countdown timer.
-      await tester.pumpWidget(const SizedBox());
+
     });
   });
 

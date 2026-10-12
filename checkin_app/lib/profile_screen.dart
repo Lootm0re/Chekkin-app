@@ -2,9 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 
-import 'backend.dart';
 import 'app_only.dart';
 import 'avatar_editor_screen.dart';
+import 'backend.dart';
 import 'business_screen.dart';
 import 'dev_app_check_screen.dart';
 import 'friends_screen.dart';

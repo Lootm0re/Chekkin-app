@@ -35,6 +35,7 @@ class _MapScreenState extends State<MapScreen> {
   final Future<Map<PinStyle, BitmapDescriptor>> _pinIcons = loadPinIcons([
     for (final category in PlaceCategory.values) ...[
       PinStyle(category.color, category.icon),
+      PinStyle(category.color, category.icon, highlighted: true),
       PinStyle(AppColors.inactive, category.icon),
     ],
     _devPin,
@@ -212,6 +213,8 @@ class _MapScreenState extends State<MapScreen> {
             position: place.position,
             icon: _pinIcon(place.pinStyle),
             anchor: const Offset(0.5, 0.5),
+            // Diamond above Platinum above Premium above the rest.
+            zIndexInt: place.mapLayer,
             infoWindow: InfoWindow(title: place.name, snippet: place.summary),
             onTap: () => _selectPlace(place),
           ),

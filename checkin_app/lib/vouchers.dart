@@ -5,10 +5,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
-import 'backend.dart';
 import 'app_only.dart';
-import 'emulators.dart';
+import 'backend.dart';
 import 'check_in_place.dart';
+import 'emulators.dart';
 import 'rewards_screen.dart';
 import 'theme.dart';
 

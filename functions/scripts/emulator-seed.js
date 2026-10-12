@@ -1,7 +1,9 @@
-// Fills the local emulators with test data for the voucher flow: @gaian
-// (owns Pizzeria La Fleur), @gais (a customer with 12,000 points) and
-// @partner2 (owns Trattoria Test), the rewards catalog, an expired voucher
-// and another partner's voucher. Clears the emulators first, so it can be
+// Fills the local emulators with test data for the voucher flow and the
+// business tools: @gaian (owns Pizzeria La Fleur, a Platinum partner), @gais
+// (a customer with 12,000 points) and @partner2 (owns Trattoria Test, Basic),
+// the rewards catalog, an expired voucher and another partner's voucher, and
+// made-up partners in every tier with check-ins this month and last month,
+// for the business leaderboard. Clears the emulators first, so it can be
 // re-run to start over. All three accounts use the password below.
 //
 // Run by scripts/emulators.sh, or while the emulators are running:
@@ -70,13 +72,50 @@ async function addUser({ uid, name, points }) {
   await db.doc(`devTesters/${uid}`).set({ username: uid, addedAt: Timestamp.now() });
 }
 
-async function addPartner(place, ownerUid) {
+async function addPartner(place, ownerUid, tier, category = 'restaurant') {
   await db.doc(`businesses/${place.id}`).set({
-    ownerUid, status: 'approved', tier: 'basic', placeName: place.name, category: 'restaurant',
+    ownerUid, status: 'approved', tier, placeName: place.name, category,
     requestedAt: Timestamp.now(), approvedAt: Timestamp.now(), codeSeq: 0,
   });
   await db.doc(`businessSecrets/${place.id}`).set({ secret: crypto.randomBytes(20).toString('base64'), seq: 0 });
 }
+
+/** 'YYYY-MM' in Europe/Stockholm, [monthsAgo] months back: the server's budget months. */
+function monthKey(monthsAgo = 0) {
+  const now = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit' })
+    .format(new Date()).slice(0, 7);
+  const [year, month] = now.split('-').map(Number);
+  const index = year * 12 + (month - 1) - monthsAgo;
+  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}`;
+}
+
+/** Check-ins this month and last, as placeBudgets (what the budget and the business leaderboard count). */
+async function addCheckIns(placeId, thisMonth, lastMonth) {
+  for (const [month, used] of [[monthKey(0), thisMonth], [monthKey(1), lastMonth]]) {
+    if (used > 0) await db.doc(`placeBudgets/${placeId}_${month}`).set({ placeId, month, used });
+  }
+}
+
+// Made-up partners for the business leaderboard: [id, name, tier, category,
+// check-ins this month, last month]. Basic has 6 with Trattoria, a league of
+// its own. Premium (3) is too small and joins Platinum (La Fleur and 3
+// more); Diamond (2) is too small for the top and joins them too, so La
+// Fleur ranks 6th of 9 with places above and below, and won last month.
+const LEAGUE_PLACES = [
+  ['emulatorBasic1', 'Kaffebaren Söder', 'basic', 'cafe', 88, 70],
+  ['emulatorBasic2', 'Hörnkiosken', 'basic', 'shop', 64, 81],
+  ['emulatorBasic3', 'Bageri Vete', 'basic', 'cafe', 47, 52],
+  ['emulatorBasic4', 'Nudelbaren', 'basic', 'restaurant', 21, 12],
+  ['emulatorBasic5', 'Blomsterboden', 'basic', 'shop', 3, 9],
+  ['emulatorPremium1', 'Café Lyktan', 'premium', 'cafe', 81, 90],
+  ['emulatorPremium2', 'Sushi Nami', 'premium', 'restaurant', 33, 40],
+  ['emulatorPremium3', 'Bokhandeln', 'premium', 'shop', 7, 15],
+  ['emulatorPlatinum1', 'Restaurang Fyren', 'platinum', 'restaurant', 96, 130],
+  ['emulatorPlatinum2', 'Hotell Ankaret', 'platinum', 'hotel', 64, 88],
+  ['emulatorPlatinum3', 'Glassbaren', 'platinum', 'cafe', 18, 25],
+  ['emulatorDiamond1', 'Grand Hotell Norr', 'diamond', 'hotel', 1284, 1170],
+  ['emulatorDiamond2', 'Saluhallen', 'diamond', 'shop', 57, 140],
+];
 
 async function addVoucher(code, place, { expiresInDays }) {
   const reward = CATALOG['restaurant-discount'];
@@ -94,8 +133,14 @@ async function addVoucher(code, place, { expiresInDays }) {
 async function main() {
   await clearEmulators();
   for (const user of USERS) await addUser(user);
-  await addPartner(LA_FLEUR, 'gaian');
-  await addPartner(TRATTORIA, 'partner2');
+  await addPartner(LA_FLEUR, 'gaian', 'platinum');
+  await addPartner(TRATTORIA, 'partner2', 'basic');
+  await addCheckIns(LA_FLEUR.id, 41, 1502);
+  await addCheckIns(TRATTORIA.id, 12, 30);
+  for (const [id, name, tier, category, thisMonth, lastMonth] of LEAGUE_PLACES) {
+    await addPartner({ id, name }, `owner-${id}`, tier, category);
+    await addCheckIns(id, thisMonth, lastMonth);
+  }
   for (const [id, reward] of Object.entries(CATALOG)) await db.doc(`rewards/${id}`).set(reward);
   // Expired yesterday, at @gaian's place.
   await addVoucher('EXPDTEST', LA_FLEUR, { expiresInDays: -1 });
@@ -104,8 +149,8 @@ async function main() {
 
   console.log(`Seeded ${PROJECT}. Sign in with password "${PASSWORD}" as:`);
   console.log('  gais@chekkin.test      customer, 12000 points');
-  console.log(`  gaian@chekkin.test     owns ${LA_FLEUR.name}`);
-  console.log(`  partner2@chekkin.test  owns ${TRATTORIA.name}`);
+  console.log(`  gaian@chekkin.test     owns ${LA_FLEUR.name} (Platinum, 6th in its league, won last month)`);
+  console.log(`  partner2@chekkin.test  owns ${TRATTORIA.name} (Basic, 5th of 6)`);
   console.log(`Vouchers: EXPDTEST (expired, ${LA_FLEUR.name}), THERTEST (valid, ${TRATTORIA.name}).`);
 }
 

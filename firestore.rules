@@ -77,8 +77,9 @@ service cloud.firestore {
     }
 
     // Business claims, written by requestBusinessClaim and
-    // scripts/business-claims.js. Owners read their own for the Business
-    // screen.
+    // scripts/business-claims.js; the tier by scripts/partner-tiers.js. Owners
+    // read their own for the Business screen, never other businesses (the
+    // business leaderboard comes from getBusinessLeaderboard).
     match /businesses/{placeId} {
       allow read: if request.auth != null && request.auth.uid == resource.data.ownerUid;
       allow write: if false;
@@ -113,9 +114,10 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // alerts, businessSecrets, buddyCheckins, checkIns, devTesters,
-    // placeBudgets, places, placesQuota, phoneNumbers, voucherAttempts, and
-    // anything else.
+    // alerts, businessSecrets (with each place's check-in codes and code
+    // quota), buddyCheckins, checkIns, devTesters, placeBudgets (check-in
+    // counts, also behind the business leaderboard), places, placesQuota,
+    // phoneNumbers, voucherAttempts, and anything else.
     match /{document=**} {
       allow read, write: if false;
     }

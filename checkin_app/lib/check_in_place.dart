@@ -30,7 +30,36 @@ enum PlaceCategory {
 }
 
 /// Partner tiers, as in TIERS in functions/index.js.
-const Map<String, String> tierLabels = {'basic': 'Basic', 'premium': 'Premium', 'diamond': 'Diamond'};
+/// Partner tiers, lowest first. Keep in sync with TIERS in functions/index.js.
+const Map<String, String> tierLabels = {
+  'basic': 'Basic',
+  'premium': 'Premium',
+  'platinum': 'Platinum',
+  'diamond': 'Diamond',
+};
+
+/// 1 for Basic up to 4 for Diamond; 0 for anything else.
+int tierRank(String? tier) => tier == null ? 0 : tierLabels.keys.toList().indexOf(tier) + 1;
+
+/// Tiers whose pins are highlighted on the map: Premium and up.
+bool isHighlightedTier(String? tier) => tierRank(tier) >= tierRank('premium');
+
+/// The plan chip for [tier]: a brighter colour and icon for higher tiers.
+ColorChip tierChip(String tier, {String? label, bool compact = false}) => ColorChip(
+      label: label ?? '${tierLabels[tier] ?? 'Partner'} plan',
+      color: switch (tier) {
+        'premium' => AppColors.yellow,
+        'platinum' => AppColors.sky,
+        'diamond' => AppColors.purple,
+        _ => AppColors.lightPurple,
+      },
+      icon: switch (tier) {
+        'platinum' => Icons.military_tech_rounded,
+        'diamond' => Icons.diamond_rounded,
+        _ => Icons.workspace_premium_rounded,
+      },
+      compact: compact,
+    );
 
 /// A check-in eligible place, as returned by the nearbyPlaces function.
 class CheckInPlace {
@@ -43,7 +72,7 @@ class CheckInPlace {
   /// Other businesses can't be checked in to.
   final bool partner;
 
-  /// 'basic', 'premium' or 'diamond' for partners.
+  /// 'basic', 'premium', 'platinum' or 'diamond' for partners.
   final String? tier;
 
   /// Base points for a check-in now, before group multipliers.
@@ -81,8 +110,16 @@ class CheckInPlace {
   /// A business that isn't a partner yet: shown grey, no check-ins.
   bool get closed => category.isBusiness && !partner;
 
-  /// Grey for businesses that aren't partners yet, else the category's colour.
-  PinStyle get pinStyle => PinStyle(closed ? AppColors.inactive : category.color, category.icon);
+  /// Grey for businesses that aren't partners yet, else the category's
+  /// colour; highlighted for Premium partners and up.
+  PinStyle get pinStyle => PinStyle(
+        closed ? AppColors.inactive : category.color,
+        category.icon,
+        highlighted: partner && isHighlightedTier(tier),
+      );
+
+  /// Drawing order on the map: higher tiers on top of lower ones.
+  int get mapLayer => partner ? tierRank(tier) : 0;
 
   /// E.g. 'Premium partner · 50 points', for the map.
   String get summary {
