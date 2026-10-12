@@ -1,16 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'emulators.dart';
 import 'user_avatar.dart';
 
 /// The signed-in user's friends, as user ids. Names and pictures come from
 /// publicProfiles (see [PublicProfileBuilder]).
 Stream<List<String>> friendUidsStream() {
-  String uid = FirebaseAuth.instance.currentUser!.uid;
-  return FirebaseFirestore.instance
+  String uid = firebaseAuth.currentUser!.uid;
+  return firestore
       .collection('users')
       .doc(uid)
       .collection('friends')
@@ -28,7 +28,7 @@ class PublicProfileBuilder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseFirestore.instance.collection('publicProfiles').doc(uid).snapshots(),
+      stream: firestore.collection('publicProfiles').doc(uid).snapshots(),
       builder: (context, snapshot) => builder(context, snapshot.data?.data() as Map<String, dynamic>?),
     );
   }
@@ -46,7 +46,7 @@ class FriendsScreen extends StatefulWidget {
 class _FriendsScreenState extends State<FriendsScreen> {
   final TextEditingController usernameController = TextEditingController();
   final FirebaseFunctions functions = cloudFunctions;
-  final String uid = FirebaseAuth.instance.currentUser!.uid;
+  final String uid = firebaseAuth.currentUser!.uid;
   bool isSending = false;
 
   @override
@@ -127,7 +127,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    CollectionReference requests = FirebaseFirestore.instance.collection('friendRequests');
+    CollectionReference requests = firestore.collection('friendRequests');
 
     return Scaffold(
       appBar: AppBar(title: const Text('Friends')),

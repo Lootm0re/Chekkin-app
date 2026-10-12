@@ -2,9 +2,9 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'app_only.dart';
 import 'check_in_place.dart';
 import 'emulators.dart';
@@ -18,7 +18,7 @@ class BusinessScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
+    String uid = firebaseAuth.currentUser!.uid;
 
     if (!appOnlyFeaturesAvailable) {
       return Scaffold(
@@ -37,7 +37,7 @@ class BusinessScreen extends StatelessWidget {
 
     return Scaffold(
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance.collection('businesses').where('ownerUid', isEqualTo: uid).snapshots(),
+        stream: firestore.collection('businesses').where('ownerUid', isEqualTo: uid).snapshots(),
         builder: (context, snapshot) {
           Widget content;
           if (snapshot.hasError) {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import 'backend.dart';
 import 'auth_screen.dart';
 import 'emulators.dart';
 import 'place_screen.dart';
@@ -32,7 +33,7 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
     });
 
     try {
-      await FirebaseAuth.instance.verifyPhoneNumber(
+      await firebaseAuth.verifyPhoneNumber(
         phoneNumber: phoneController.text.trim(),
         verificationCompleted: (PhoneAuthCredential credential) async {
           await _linkPhoneCredential(credential);
@@ -80,7 +81,7 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
     // Tracks how far we got so the error says which step failed.
     String step = 'link phone to account';
     try {
-      User user = FirebaseAuth.instance.currentUser!;
+      User user = firebaseAuth.currentUser!;
       bool hasPhone = user.providerData.any((p) => p.providerId == PhoneAuthProvider.PROVIDER_ID);
       debugPrint('Phone verify: uid=${user.uid} hasPhone=$hasPhone');
       if (hasPhone) {

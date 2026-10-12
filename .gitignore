@@ -6,3 +6,6 @@
 
 # Emulator logs
 *-debug.log
+
+# Screenshots from the widget tests (flutter test --dart-define=SCREENSHOTS=true)
+/screenshots/

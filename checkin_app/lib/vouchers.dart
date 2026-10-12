@@ -3,9 +3,9 @@ import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'app_only.dart';
 import 'emulators.dart';
 import 'check_in_place.dart';
@@ -234,7 +234,7 @@ class VoucherScreen extends StatelessWidget {
           const Positioned(left: -60, top: 40, child: DecorCircle(size: 160, color: AppColors.coral)),
           const Positioned(right: -50, bottom: 60, child: DecorCircle(size: 190, color: AppColors.sky)),
           StreamBuilder<DocumentSnapshot>(
-            stream: FirebaseFirestore.instance.collection('vouchers').doc(code).snapshots(),
+            stream: firestore.collection('vouchers').doc(code).snapshots(),
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 debugPrint('Loading voucher failed: ${snapshot.error}');
@@ -486,12 +486,12 @@ class MyVouchersScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
+    String uid = firebaseAuth.currentUser!.uid;
 
     return Scaffold(
       appBar: AppBar(title: const Text('My Vouchers')),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance.collection('vouchers').where('userId', isEqualTo: uid).snapshots(),
+        stream: firestore.collection('vouchers').where('userId', isEqualTo: uid).snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             debugPrint('Loading vouchers failed: ${snapshot.error}');

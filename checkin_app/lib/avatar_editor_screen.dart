@@ -1,8 +1,7 @@
 import 'package:avatar_maker/avatar_maker.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'user_avatar.dart';
 
 /// Build a cartoon avatar: face, hair, clothes and so on, with a live preview.
@@ -29,8 +28,8 @@ class _AvatarEditorScreenState extends State<AvatarEditorScreen> {
   Future<void> _save() async {
     setState(() => isSaving = true);
     try {
-      String uid = FirebaseAuth.instance.currentUser!.uid;
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      String uid = firebaseAuth.currentUser!.uid;
+      await firestore.collection('users').doc(uid).update({
         'avatar': encodeAvatar(controller.selectedOptions),
         'profileImage': 'avatar',
       });

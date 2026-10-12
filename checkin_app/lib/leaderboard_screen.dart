@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
+import 'backend.dart';
 import 'theme.dart';
 import 'user_avatar.dart';
 
 /// The top 100 by points ever earned, so spending points on rewards doesn't
 /// cost a place. Other users' private details live in users/{uid};
 /// publicProfiles only holds what's shown here.
-Stream<QuerySnapshot> leaderboardStream() => FirebaseFirestore.instance
+Stream<QuerySnapshot> leaderboardStream() => firestore
     .collection('publicProfiles')
     .orderBy('lifetimePoints', descending: true)
     .limit(100)
@@ -19,7 +19,7 @@ class LeaderboardScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String currentUserId = FirebaseAuth.instance.currentUser!.uid;
+    String currentUserId = firebaseAuth.currentUser!.uid;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Leaderboard')),

@@ -1,8 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'app_only.dart';
 import 'avatar_editor_screen.dart';
 import 'business_screen.dart';
@@ -38,8 +38,8 @@ class ProfileScreen extends StatelessWidget {
 
   Future<void> _updateProfile(BuildContext context, Map<String, Object> fields) async {
     try {
-      String uid = FirebaseAuth.instance.currentUser!.uid;
-      await FirebaseFirestore.instance.collection('users').doc(uid).update(fields);
+      String uid = firebaseAuth.currentUser!.uid;
+      await firestore.collection('users').doc(uid).update(fields);
     } catch (e) {
       debugPrint('Updating profile failed: $e');
       if (!context.mounted) return;
@@ -50,11 +50,11 @@ class ProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
+    String uid = firebaseAuth.currentUser!.uid;
 
     return Scaffold(
       body: StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+        stream: firestore.collection('users').doc(uid).snapshots(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
@@ -139,7 +139,7 @@ class ProfileScreen extends StatelessWidget {
                         const SizedBox(height: 16),
                         OutlinedButton.icon(
                           icon: const Icon(Icons.logout_rounded),
-                          onPressed: () => FirebaseAuth.instance.signOut(),
+                          onPressed: () => firebaseAuth.signOut(),
                           label: const Text('Log Out'),
                         ),
                       ],
@@ -313,7 +313,7 @@ class _StatTiles extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance.collection('vouchers').where('userId', isEqualTo: uid).snapshots(),
+              stream: firestore.collection('vouchers').where('userId', isEqualTo: uid).snapshots(),
               builder: (context, snapshot) => _StatTile(
                 icon: Icons.confirmation_number_rounded,
                 color: AppColors.coral,

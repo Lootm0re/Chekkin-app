@@ -1,7 +1,7 @@
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'backend.dart';
 
 class ProfilePictureUploader {
   final ImagePicker picker = ImagePicker();
@@ -18,7 +18,7 @@ class ProfilePictureUploader {
 
     if (picked == null) return;
 
-    String uid = FirebaseAuth.instance.currentUser!.uid;
+    String uid = firebaseAuth.currentUser!.uid;
     Reference storageRef = FirebaseStorage.instance.ref().child('profile_pictures/$uid.jpg');
 
     // putData rather than putFile, which needs dart:io and fails on web.
@@ -27,7 +27,7 @@ class ProfilePictureUploader {
       SettableMetadata(contentType: picked.mimeType ?? 'image/jpeg'),
     );
 
-    await FirebaseFirestore.instance.collection('users').doc(uid).update({
+    await firestore.collection('users').doc(uid).update({
       'profileImage': 'photo',
     });
   }

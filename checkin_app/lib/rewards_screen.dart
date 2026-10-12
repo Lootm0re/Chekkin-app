@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'check_in_place.dart';
 import 'theme.dart';
 import 'vouchers.dart';
@@ -122,7 +123,7 @@ class RewardsScreen extends StatelessWidget {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
+        stream: firestore
             .collection('rewards')
             .where('active', isEqualTo: true)
             .where('type', isEqualTo: 'partner_discount')

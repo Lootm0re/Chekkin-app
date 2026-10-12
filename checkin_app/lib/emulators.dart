@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
 import 'package:flutter/foundation.dart' show kIsWeb;
 
+import 'backend.dart';
 import 'emulators_stub.dart' if (dart.library.js_interop) 'emulators_web.dart';
 
 /// Runs the web app against the local Firebase emulators instead of the real
@@ -32,9 +33,9 @@ const FirebaseOptions emulatorFirebaseOptions = FirebaseOptions(
 );
 
 /// The functions to call: the real ones, or the emulator's through the proxy.
-FirebaseFunctions get cloudFunctions => useEmulators
+FirebaseFunctions get cloudFunctions => functionsOverride ?? (useEmulators
     ? FirebaseFunctions.instanceFor(region: '${Uri.base.origin}/$emulatorProjectId/us-central1')
-    : FirebaseFunctions.instance;
+    : FirebaseFunctions.instance);
 
 /// Points Auth and Firestore at the emulators. Call before using either.
 Future<void> connectToEmulators() async {

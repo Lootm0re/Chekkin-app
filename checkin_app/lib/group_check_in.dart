@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'backend.dart';
 import 'friends_screen.dart';
 import 'theme.dart';
 import 'user_avatar.dart';
@@ -174,9 +174,9 @@ class GroupInviteCards extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
+    String uid = firebaseAuth.currentUser!.uid;
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection('users').doc(uid).collection('groupInvites').snapshots(),
+      stream: firestore.collection('users').doc(uid).collection('groupInvites').snapshots(),
       builder: (context, snapshot) {
         var docs = snapshot.data?.docs ?? [];
         var live = <QueryDocumentSnapshot>[];
@@ -276,9 +276,9 @@ class ActiveGroupCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
+    String uid = firebaseAuth.currentUser!.uid;
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseFirestore.instance.collection('groups').doc(groupId).snapshots(),
+      stream: firestore.collection('groups').doc(groupId).snapshots(),
       builder: (context, snapshot) {
         var group = snapshot.data?.data() as Map<String, dynamic>?;
         if (group == null) return const SizedBox.shrink();
