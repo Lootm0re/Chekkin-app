@@ -414,3 +414,17 @@ class DecorCircle extends StatelessWidget {
     return Container(width: size, height: size, decoration: BoxDecoration(color: color, shape: BoxShape.circle));
   }
 }
+
+/// A whole number with thousand separators: 12000 → "12,000". Anything that
+/// isn't a number (a missing field) is shown as it is.
+String formatNumber(Object? value) {
+  if (value is! num) return '${value ?? 0}';
+  int n = value.round();
+  String digits = n.abs().toString();
+  StringBuffer out = StringBuffer(n < 0 ? '-' : '');
+  for (int i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) out.write(',');
+    out.write(digits[i]);
+  }
+  return out.toString();
+}

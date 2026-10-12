@@ -270,7 +270,7 @@ class _Header extends StatelessWidget {
                     alignment: WrapAlignment.center,
                     children: [
                       ColorChip(
-                        label: '${data['lifetimePoints'] ?? data['points']} pts earned',
+                        label: '${formatNumber(data['lifetimePoints'] ?? data['points'])} pts earned',
                         color: AppColors.yellow,
                         icon: Icons.star_rounded,
                       ),
@@ -288,7 +288,7 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Points to spend, vouchers and friends.
+/// Available points, vouchers and friends.
 class _StatTiles extends StatelessWidget {
   final String uid;
   final num points;
@@ -306,8 +306,8 @@ class _StatTiles extends StatelessWidget {
             child: _StatTile(
               icon: Icons.star_rounded,
               color: AppColors.yellow,
-              value: '$points',
-              label: 'Points to spend',
+              value: formatNumber(points),
+              label: 'Available points',
             ),
           ),
           const SizedBox(width: 10),
@@ -317,7 +317,7 @@ class _StatTiles extends StatelessWidget {
               builder: (context, snapshot) => _StatTile(
                 icon: Icons.confirmation_number_rounded,
                 color: AppColors.coral,
-                value: snapshot.hasData ? '${snapshot.data!.size}' : '–',
+                value: snapshot.hasData ? formatNumber(snapshot.data!.size) : '–',
                 label: 'Vouchers',
               ),
             ),
@@ -329,7 +329,7 @@ class _StatTiles extends StatelessWidget {
               builder: (context, snapshot) => _StatTile(
                 icon: Icons.people_rounded,
                 color: AppColors.mint,
-                value: snapshot.hasData ? '${snapshot.data!.length}' : '–',
+                value: snapshot.hasData ? formatNumber(snapshot.data!.length) : '–',
                 label: 'Friends',
               ),
             ),

@@ -541,15 +541,15 @@ class _BusinessStatsState extends State<_BusinessStats> {
       num? budget = stats!['monthlyBudget'];
       int used = (stats!['usedThisMonth'] as num).toInt();
       String budgetText = budget == null
-          ? '$used check-ins this month (unlimited).'
-          : '$used of $budget full-point check-ins used this month; after that, customers earn 5 points '
+          ? '${formatNumber(used)} check-ins this month (unlimited).'
+          : '${formatNumber(used)} of ${formatNumber(budget)} full-point check-ins used this month; after that, customers earn 5 points '
               'until next month.';
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (tier != null) ...[
             Text(
-              '$tier partner: ${stats!['tierPoints']} points a check-in.',
+              '$tier partner: ${formatNumber(stats!['tierPoints'])} points a check-in.',
               style: AppText.body(size: 15, weight: FontWeight.w800),
             ),
             const SizedBox(height: 10),
@@ -557,7 +557,7 @@ class _BusinessStatsState extends State<_BusinessStats> {
               children: [
                 Text('Monthly budget', style: AppText.body(size: 14, color: AppColors.muted)),
                 const Spacer(),
-                Text(budget == null ? '$used · unlimited' : '$used / $budget', style: AppText.heading(size: 16)),
+                Text(budget == null ? '${formatNumber(used)} · unlimited' : '${formatNumber(used)} / ${formatNumber(budget)}', style: AppText.heading(size: 16)),
               ],
             ),
             const SizedBox(height: 6),
@@ -582,10 +582,10 @@ class _BusinessStatsState extends State<_BusinessStats> {
             crossAxisSpacing: 10,
             childAspectRatio: 1.9,
             children: [
-              _Stat(label: 'Today', value: '${stats!['today']}'),
-              _Stat(label: 'Last 7 days', value: '${stats!['week']}'),
-              _Stat(label: 'Since approval', value: '${stats!['sinceApproval']}'),
-              _Stat(label: 'Group check-ins', value: '${stats!['groupCheckIns']}'),
+              _Stat(label: 'Today', value: formatNumber(stats!['today'])),
+              _Stat(label: 'Last 7 days', value: formatNumber(stats!['week'])),
+              _Stat(label: 'Since approval', value: formatNumber(stats!['sinceApproval'])),
+              _Stat(label: 'Group check-ins', value: formatNumber(stats!['groupCheckIns'])),
               _Stat(label: 'Avg. group size', value: average == null ? '–' : '$average'),
             ],
           ),
@@ -751,6 +751,7 @@ class _VerifyVoucherScreenState extends State<_VerifyVoucherScreen> {
             autocorrect: false,
             enableSuggestions: false,
             maxLength: 9, // with a space or dash in the middle
+            buildCounter: (context, {required currentLength, required isFocused, maxLength}) => null,
             style: AppText.heading(size: 34).copyWith(letterSpacing: 6),
             decoration: InputDecoration(
               hintText: 'ABCD EFGH',

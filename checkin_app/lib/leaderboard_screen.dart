@@ -118,7 +118,7 @@ class LeaderboardRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          Text('${data['lifetimePoints'] ?? 0}', style: AppText.heading(size: 18)),
+          Text(formatNumber(data['lifetimePoints']), style: AppText.heading(size: 18)),
           const SizedBox(width: 4),
           Text('pts', style: AppText.body(size: 14, color: AppColors.muted)),
         ],

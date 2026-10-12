@@ -370,7 +370,16 @@ class CodeBoxes extends StatefulWidget {
   final int length;
   final bool enabled;
 
-  const CodeBoxes({super.key, required this.controller, required this.length, this.enabled = true});
+  /// What screen readers call it; defaults to the check-in code.
+  final String? semanticsLabel;
+
+  const CodeBoxes({
+    super.key,
+    required this.controller,
+    required this.length,
+    this.enabled = true,
+    this.semanticsLabel,
+  });
 
   @override
   State<CodeBoxes> createState() => _CodeBoxesState();
@@ -394,7 +403,7 @@ class _CodeBoxesState extends State<CodeBoxes> {
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      label: 'Check-in code, ${widget.length} digits',
+      label: widget.semanticsLabel ?? 'Check-in code, ${widget.length} digits',
       child: SizedBox(
         height: 64,
         child: Stack(

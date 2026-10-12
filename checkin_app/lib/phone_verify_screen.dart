@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 import 'auth_screen.dart';
 import 'emulators.dart';
+import 'place_screen.dart';
 import 'theme.dart';
 
 class PhoneVerifyScreen extends StatefulWidget {
@@ -163,12 +166,13 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
       title: codeSent ? 'Enter your code' : 'Verify your phone',
       subtitle: codeSent
           ? 'We texted a 6-digit code to ${phoneController.text.trim()}.'
-          : 'To keep one account per person, we need to verify your phone number.',
+          : 'We\'ll text you a 6-digit code to confirm it\'s you.',
       children: [
         if (!codeSent) ...[
           TextField(
             controller: phoneController,
             keyboardType: TextInputType.phone,
+            autofillHints: const [AutofillHints.telephoneNumber],
             style: AppText.heading(size: 20, weight: FontWeight.w600),
             decoration: const InputDecoration(
               labelText: 'Phone number',
@@ -176,6 +180,13 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
               helperText: 'Include the country code, e.g. +1.',
               prefixIcon: Icon(Icons.phone_rounded),
             ),
+          ),
+          const SizedBox(height: 16),
+          const AuthNote(
+            icon: Icons.verified_user_rounded,
+            color: AppColors.purple,
+            text: 'One account per phone number. A number that\'s already used by another account can\'t be '
+                'added again.',
           ),
           const SizedBox(height: 16),
           if (errorMessage != null) ...[
@@ -187,15 +198,11 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
             child: isLoading ? const AuthButtonSpinner() : const Text('Send code'),
           ),
         ] else ...[
-          TextField(
+          CodeBoxes(
             controller: codeController,
-            keyboardType: TextInputType.number,
-            textAlign: TextAlign.center,
-            style: AppText.heading(size: 32, weight: FontWeight.w600).copyWith(letterSpacing: 10),
-            decoration: const InputDecoration(
-              hintText: '••••••',
-              contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-            ),
+            length: 6,
+            enabled: !isLoading,
+            semanticsLabel: 'Verification code, 6 digits',
           ),
           const SizedBox(height: 16),
           if (errorMessage != null) ...[
@@ -207,12 +214,67 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
             child: isLoading ? const AuthButtonSpinner() : const Text('Verify'),
           ),
           const SizedBox(height: 8),
+          // A new verification ID means a new code was sent, so the
+          // countdown starts again.
+          _ResendCode(key: ValueKey(verificationId), onResend: isLoading ? null : _sendCode),
           TextButton(
             onPressed: () => setState(() => codeSent = false),
             child: const Text('Wrong number? Go back'),
           ),
         ],
       ],
+    );
+  }
+}
+
+/// "Resend code in 0:59", then a Resend code button.
+class _ResendCode extends StatefulWidget {
+  final VoidCallback? onResend;
+
+  const _ResendCode({super.key, required this.onResend});
+
+  @override
+  State<_ResendCode> createState() => _ResendCodeState();
+}
+
+class _ResendCodeState extends State<_ResendCode> {
+  static const int waitSeconds = 60;
+
+  int secondsLeft = waitSeconds;
+  Timer? timer;
+
+  @override
+  void initState() {
+    super.initState();
+    timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      setState(() => secondsLeft--);
+      if (secondsLeft <= 0) t.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (secondsLeft > 0) {
+      return SizedBox(
+        height: AppShapes.minTapTarget,
+        child: Center(
+          child: Text(
+            'Resend code in ${secondsLeft ~/ 60}:${(secondsLeft % 60).toString().padLeft(2, '0')}',
+            style: AppText.body(size: 15, weight: FontWeight.w700, color: AppColors.muted),
+          ),
+        ),
+      );
+    }
+    return TextButton.icon(
+      onPressed: widget.onResend,
+      icon: const Icon(Icons.refresh_rounded),
+      label: const Text('Resend code'),
     );
   }
 }

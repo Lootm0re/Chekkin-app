@@ -77,7 +77,7 @@ class _RedeemRewardScreenState extends State<RedeemRewardScreen> {
       builder: (context) => AlertDialog(
         title: Text('Redeem ${widget.reward.name} at ${place['placeName']}?'),
         content: Text(
-          'This uses ${widget.reward.pointsRequired} of your ${widget.userPoints} points. You\'ll get a voucher '
+          'This uses ${formatNumber(widget.reward.pointsRequired)} of your ${formatNumber(widget.userPoints)} points. You\'ll get a voucher '
           'to show the staff, and it only works at ${place['placeName']}.',
         ),
         actions: [

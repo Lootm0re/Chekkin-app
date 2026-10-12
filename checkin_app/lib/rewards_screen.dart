@@ -94,13 +94,16 @@ class RewardsScreen extends StatelessWidget {
 
   const RewardsScreen({super.key, required this.userPoints});
 
+  /// The cheapest reward the user can't afford yet, Coming soon ones
+  /// included, for the progress bar.
   Reward? _getNextReward(List<Reward> rewards) {
+    Reward? next;
     for (Reward reward in rewards) {
-      if (!reward.comingSoon && userPoints < reward.pointsRequired) {
-        return reward;
+      if (userPoints < reward.pointsRequired && (next == null || reward.pointsRequired < next.pointsRequired)) {
+        next = reward;
       }
     }
-    return null;
+    return next;
   }
 
   @override
@@ -129,7 +132,12 @@ class RewardsScreen extends StatelessWidget {
           List<Reward> rewards = [
             ...?snapshot.data?.docs.map(Reward.fromCatalog),
             ...comingSoonRewards,
-          ]..sort((a, b) => a.pointsRequired.compareTo(b.pointsRequired));
+          ]..sort((a, b) {
+              // Rewards that can be redeemed first, Coming soon ones after;
+              // cheapest first within each.
+              if (a.comingSoon != b.comingSoon) return a.comingSoon ? 1 : -1;
+              return a.pointsRequired.compareTo(b.pointsRequired);
+            });
           return _buildList(context, rewards, loading: !snapshot.hasData && !snapshot.hasError);
         },
       ),
@@ -187,12 +195,12 @@ class _PointsCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('total points', style: AppText.body(size: 15, weight: FontWeight.w700, color: Colors.white70)),
-                  Text('$points', style: AppText.heading(size: 52, color: Colors.white)),
+                  Text('Available points', style: AppText.body(size: 15, weight: FontWeight.w700, color: Colors.white70)),
+                  Text(formatNumber(points), style: AppText.heading(size: 52, color: Colors.white)),
                   if (next != null) ...[
                     const SizedBox(height: 12),
                     Text(
-                      'Next reward: ${next.name}',
+                      '${formatNumber(next.pointsRequired - points)} more points to ${next.name}',
                       style: AppText.body(size: 15, weight: FontWeight.w700, color: Colors.white),
                     ),
                     const SizedBox(height: 8),
@@ -207,7 +215,8 @@ class _PointsCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '${next.pointsRequired - points} points to go',
+                      '${formatNumber(points)} / ${formatNumber(next.pointsRequired)}'
+                      '${next.comingSoon ? ' · coming soon' : ''}',
                       style: AppText.body(size: 14, color: Colors.white70),
                     ),
                   ],
@@ -271,7 +280,7 @@ class _RewardCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                ColorChip(label: '${reward.pointsRequired} pts', color: AppColors.yellow, icon: Icons.star_rounded),
+                ColorChip(label: '${formatNumber(reward.pointsRequired)} pts', color: AppColors.yellow, icon: Icons.star_rounded),
                 const Spacer(),
                 action,
               ],

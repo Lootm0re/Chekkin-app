@@ -391,7 +391,7 @@ class _MapScreenState extends State<MapScreen> {
   /// Why a check-in earned less than usual, if it did.
   String? _pointsNote(Map data) {
     if (data['capped'] == true) {
-      return 'You\'ve reached today\'s limit of ${data['dailyPartnerPointsCap']} points from partner '
+      return 'You\'ve reached today\'s limit of ${formatNumber(data['dailyPartnerPointsCap'])} points from partner '
           'check-ins, so this one earned less. The limit resets at midnight.';
     }
     if (data['budgetUsedUp'] == true) {
@@ -447,7 +447,7 @@ class _MapScreenState extends State<MapScreen> {
           children: [
             Text(placeName, textAlign: TextAlign.center, style: AppText.body(size: 16, color: AppColors.muted)),
             const SizedBox(height: 14),
-            ColorChip(label: '+$pointsEarned points', color: AppColors.yellow),
+            ColorChip(label: '+${formatNumber(pointsEarned)} points', color: AppColors.yellow),
             if (note != null) ...[
               const SizedBox(height: 16),
               Text(note, textAlign: TextAlign.center, style: AppText.body(size: 15)),
@@ -625,7 +625,7 @@ class _MapScreenState extends State<MapScreen> {
   /// Yellow pill with the user's spendable points.
   Widget _pointsPill() {
     return Semantics(
-      label: '${widget.userPoints} points',
+      label: '${formatNumber(widget.userPoints)} points',
       child: Container(
         height: AppShapes.buttonHeight,
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -639,7 +639,7 @@ class _MapScreenState extends State<MapScreen> {
           children: [
             const Icon(Icons.star_rounded, color: AppColors.ink),
             const SizedBox(width: 6),
-            Text('${widget.userPoints}', style: AppText.heading(size: 20, weight: FontWeight.w600)),
+            Text(formatNumber(widget.userPoints), style: AppText.heading(size: 20, weight: FontWeight.w600)),
           ],
         ),
       ),
