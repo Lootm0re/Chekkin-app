@@ -3,7 +3,8 @@
 // (a customer with 12,000 points) and @partner2 (owns Trattoria Test, Basic),
 // the rewards catalog, an expired voucher and another partner's voucher, and
 // made-up partners in every tier with check-ins this month and last month,
-// for the business leaderboard. Clears the emulators first, so it can be
+// for the business leaderboard, and individual check-ins at La Fleur and
+// Trattoria for the owners' Today / Last 7 days tiles. Clears the emulators first, so it can be
 // re-run to start over. All three accounts use the password below.
 //
 // Run by scripts/emulators.sh, or while the emulators are running:
@@ -72,10 +73,12 @@ async function addUser({ uid, name, points }) {
   await db.doc(`devTesters/${uid}`).set({ username: uid, addedAt: Timestamp.now() });
 }
 
-async function addPartner(place, ownerUid, tier, category = 'restaurant') {
+async function addPartner(place, ownerUid, tier, category = 'restaurant', extra = {}) {
+  // Approved 90 days ago, so older check-ins count in "Since approval".
+  const approvedAt = Timestamp.fromMillis(Date.now() - 90 * DAY_MS);
   await db.doc(`businesses/${place.id}`).set({
     ownerUid, status: 'approved', tier, placeName: place.name, category,
-    requestedAt: Timestamp.now(), approvedAt: Timestamp.now(), codeSeq: 0,
+    requestedAt: approvedAt, approvedAt, codeSeq: 0, ...extra,
   });
   await db.doc(`businessSecrets/${place.id}`).set({ secret: crypto.randomBytes(20).toString('base64'), seq: 0 });
 }
@@ -87,6 +90,31 @@ function monthKey(monthsAgo = 0) {
   const [year, month] = now.split('-').map(Number);
   const index = year * 12 + (month - 1) - monthsAgo;
   return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}`;
+}
+
+const POINTS = { basic: 25, premium: 50, platinum: 75, diamond: 100 };
+
+/**
+ * Individual check-ins (checkIns documents, like performCheckIn writes) by
+ * made-up guests, for the owner's Today / Last 7 days / Since approval
+ * tiles: [today] in the last hour or so, [week] spread over the 6 days
+ * before, and [older] over the weeks before that.
+ */
+async function addCheckInHistory(place, tier, { today, week, older }) {
+  const now = Date.now();
+  const times = [
+    ...Array.from({ length: today }, (_, i) => now - (10 + i * 12) * 60 * 1000),
+    ...Array.from({ length: week }, (_, i) => now - (1 + (i % 6)) * DAY_MS - (i * 37 % 300) * 60 * 1000),
+    ...Array.from({ length: older }, (_, i) => now - (8 + (i * 3) % 70) * DAY_MS),
+  ];
+  const batch = db.batch();
+  times.forEach((ms, i) => {
+    batch.set(db.collection('checkIns').doc(), {
+      uid: `seedGuest${i % 7}`, placeId: place.id, placeName: place.name, tier,
+      basePoints: POINTS[tier], points: POINTS[tier], distanceMeters: 8, createdAt: Timestamp.fromMillis(ms),
+    });
+  });
+  await batch.commit();
 }
 
 /** Check-ins this month and last, as placeBudgets (what the budget and the business leaderboard count). */
@@ -133,8 +161,11 @@ async function addVoucher(code, place, { expiresInDays }) {
 async function main() {
   await clearEmulators();
   for (const user of USERS) await addUser(user);
-  await addPartner(LA_FLEUR, 'gaian', 'platinum');
+  // 6 group check-ins with 15 people in all: 2.5 on average.
+  await addPartner(LA_FLEUR, 'gaian', 'platinum', 'restaurant', { groupCount: 6, groupMembers: 15 });
   await addPartner(TRATTORIA, 'partner2', 'basic');
+  await addCheckInHistory(LA_FLEUR, 'platinum', { today: 4, week: 18, older: 19 });
+  await addCheckInHistory(TRATTORIA, 'basic', { today: 2, week: 6, older: 4 });
   await addCheckIns(LA_FLEUR.id, 41, 1502);
   await addCheckIns(TRATTORIA.id, 12, 30);
   for (const [id, name, tier, category, thisMonth, lastMonth] of LEAGUE_PLACES) {
@@ -149,7 +180,8 @@ async function main() {
 
   console.log(`Seeded ${PROJECT}. Sign in with password "${PASSWORD}" as:`);
   console.log('  gais@chekkin.test      customer, 12000 points');
-  console.log(`  gaian@chekkin.test     owns ${LA_FLEUR.name} (Platinum, 6th in its league, won last month)`);
+  console.log(`  gaian@chekkin.test     owns ${LA_FLEUR.name} (Platinum, 6th in its league, won last month; ` +
+    '4 check-ins today, 22 in 7 days, 41 since approval)');
   console.log(`  partner2@chekkin.test  owns ${TRATTORIA.name} (Basic, 5th of 6)`);
   console.log(`Vouchers: EXPDTEST (expired, ${LA_FLEUR.name}), THERTEST (valid, ${TRATTORIA.name}).`);
 }
