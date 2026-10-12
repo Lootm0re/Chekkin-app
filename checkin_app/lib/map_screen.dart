@@ -28,6 +28,8 @@ class _MapScreenState extends State<MapScreen> {
   GoogleMapController? mapController;
   Position? currentPosition;
   Set<Marker> markers = {};
+  // The places behind [markers], for the emulator build's test place list.
+  List<CheckInPlace> nearby = [];
 
   // Pin icons: one per place category, grey ones for businesses that aren't
   // partners yet, and the dev pretend location.
@@ -145,7 +147,7 @@ class _MapScreenState extends State<MapScreen> {
   /// Dev tools only: pretend to be at [target] until the override is cleared.
   /// The server only accepts this mocked position from accounts listed with
   /// functions/scripts/dev-testers.js.
-  void _devTeleport(LatLng target) {
+  Future<void> _devTeleport(LatLng target) {
     setState(() {
       devFakePosition = Position(
         latitude: target.latitude,
@@ -164,7 +166,49 @@ class _MapScreenState extends State<MapScreen> {
       selectedPlace = null;
     });
     mapController?.animateCamera(CameraUpdate.newLatLng(target));
-    _loadNearbyPlaces(devFakePosition!);
+    return _loadNearbyPlaces(devFakePosition!);
+  }
+
+  /// Emulator build only: goes to the seeded test places and lists them, since
+  /// the map itself may not load there (the Maps key only allows approved
+  /// sites). Picking one teleports to it and selects it, like tapping its pin.
+  Future<void> _devOpenTestPlaces() async {
+    await _devTeleport(const LatLng(emulatorTestAreaLatitude, emulatorTestAreaLongitude));
+    if (!mounted) return;
+    CheckInPlace? picked = await showModalBottomSheet<CheckInPlace>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.75),
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+            children: [
+              Text('DEV: Test places', style: AppText.heading(size: 22)),
+              Text('Pick one to go there.', style: AppText.body(size: 14, color: AppColors.muted)),
+              const SizedBox(height: 8),
+              for (var place in nearby)
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  leading: IconSquare(
+                    color: place.closed ? AppColors.inactive : place.category.color,
+                    icon: place.category.icon,
+                    size: 44,
+                  ),
+                  title: Text(place.name),
+                  subtitle: Text(place.summary),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.purple),
+                  onTap: () => Navigator.of(context).pop(place),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    await _devTeleport(picked.position);
+    _selectPlace(picked);
   }
 
   void _devClearTeleport() {
@@ -203,8 +247,10 @@ class _MapScreenState extends State<MapScreen> {
       if (!mounted) return;
 
       Set<Marker> newMarkers = {};
+      List<CheckInPlace> newNearby = [];
       for (var data in places) {
         CheckInPlace place = CheckInPlace.fromMap(data);
+        newNearby.add(place);
         newMarkers.add(
           Marker(
             markerId: MarkerId(place.id),
@@ -219,7 +265,10 @@ class _MapScreenState extends State<MapScreen> {
         );
       }
 
-      setState(() => markers = newMarkers);
+      setState(() {
+        markers = newMarkers;
+        nearby = newNearby;
+      });
       if (newMarkers.isEmpty) {
         _showMapMessage('No check-in places found nearby.');
       }
@@ -612,7 +661,7 @@ class _MapScreenState extends State<MapScreen> {
             IconButton(
               tooltip: 'DEV: Go to the test places',
               icon: const Icon(Icons.science_rounded, color: AppColors.purple),
-              onPressed: () => _devTeleport(const LatLng(emulatorTestAreaLatitude, emulatorTestAreaLongitude)),
+              onPressed: _devOpenTestPlaces,
             ),
           if (devFakePosition != null)
             IconButton(
