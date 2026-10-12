@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import 'auth_screen.dart';
 import 'emulators.dart';
+import 'theme.dart';
 
 class PhoneVerifyScreen extends StatefulWidget {
   const PhoneVerifyScreen({super.key});
@@ -155,54 +157,62 @@ class _PhoneVerifyScreenState extends State<PhoneVerifyScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Verify Your Phone')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'To keep one account per person, we need to verify your phone number.',
-              style: TextStyle(fontSize: 14, color: Colors.grey),
+    return AuthPage(
+      color: AppColors.mint,
+      icon: codeSent ? Icons.sms_rounded : Icons.phone_iphone_rounded,
+      title: codeSent ? 'Enter your code' : 'Verify your phone',
+      subtitle: codeSent
+          ? 'We texted a 6-digit code to ${phoneController.text.trim()}.'
+          : 'To keep one account per person, we need to verify your phone number.',
+      children: [
+        if (!codeSent) ...[
+          TextField(
+            controller: phoneController,
+            keyboardType: TextInputType.phone,
+            style: AppText.heading(size: 20, weight: FontWeight.w600),
+            decoration: const InputDecoration(
+              labelText: 'Phone number',
+              hintText: '+14155551234',
+              helperText: 'Include the country code, e.g. +1.',
+              prefixIcon: Icon(Icons.phone_rounded),
             ),
+          ),
+          const SizedBox(height: 16),
+          if (errorMessage != null) ...[
+            ErrorNote(message: errorMessage!),
             const SizedBox(height: 16),
-
-            if (!codeSent) ...[
-              TextField(
-                controller: phoneController,
-                decoration: const InputDecoration(labelText: 'Phone number (e.g. +14155551234)'),
-                keyboardType: TextInputType.phone,
-              ),
-              const SizedBox(height: 12),
-              if (errorMessage != null)
-                Text(errorMessage!, style: const TextStyle(color: Colors.red)),
-              ElevatedButton(
-                onPressed: isLoading ? null : _sendCode,
-                child: isLoading ? const CircularProgressIndicator() : const Text('Send Code'),
-              ),
-            ] else ...[
-              TextField(
-                controller: codeController,
-                decoration: const InputDecoration(labelText: '6-digit code'),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 12),
-              if (errorMessage != null)
-                Text(errorMessage!, style: const TextStyle(color: Colors.red)),
-              ElevatedButton(
-                onPressed: isLoading ? null : _verifyCode,
-                child: isLoading ? const CircularProgressIndicator() : const Text('Verify'),
-              ),
-              TextButton(
-                onPressed: () => setState(() => codeSent = false),
-                child: const Text('Wrong number? Go back'),
-              ),
-            ],
           ],
-        ),
-      ),
+          ElevatedButton(
+            onPressed: isLoading ? null : _sendCode,
+            child: isLoading ? const AuthButtonSpinner() : const Text('Send code'),
+          ),
+        ] else ...[
+          TextField(
+            controller: codeController,
+            keyboardType: TextInputType.number,
+            textAlign: TextAlign.center,
+            style: AppText.heading(size: 32, weight: FontWeight.w600).copyWith(letterSpacing: 10),
+            decoration: const InputDecoration(
+              hintText: '••••••',
+              contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (errorMessage != null) ...[
+            ErrorNote(message: errorMessage!),
+            const SizedBox(height: 16),
+          ],
+          ElevatedButton(
+            onPressed: isLoading ? null : _verifyCode,
+            child: isLoading ? const AuthButtonSpinner() : const Text('Verify'),
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: () => setState(() => codeSent = false),
+            child: const Text('Wrong number? Go back'),
+          ),
+        ],
+      ],
     );
   }
 }

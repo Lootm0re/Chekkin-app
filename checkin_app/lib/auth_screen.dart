@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'location_access.dart';
+import 'theme.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -204,134 +205,336 @@ class _AuthScreenState extends State<AuthScreen> {
     bool finishingProfile = auth.currentUser != null && !isLoading;
     bool showSignUp = isSignUpMode || finishingProfile;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          finishingProfile
-              ? 'Finish Sign Up'
-              : showSignUp
-              ? 'Sign Up'
-              : 'Log In',
-        ),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (showSignUp)
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(labelText: 'Name'),
-              ),
-            const SizedBox(height: 12),
+    return AuthPage(
+      color: showSignUp ? AppColors.coral : AppColors.purple,
+      icon: finishingProfile
+          ? Icons.how_to_reg_rounded
+          : showSignUp
+          ? Icons.person_add_alt_1_rounded
+          : Icons.waving_hand_rounded,
+      title: finishingProfile
+          ? 'Finish creating your account'
+          : showSignUp
+          ? 'Create account'
+          : 'Welcome back!',
+      subtitle: finishingProfile
+          ? 'Just a few more details.'
+          : showSignUp
+          ? 'Check in at places you love and earn rewards.'
+          : 'Sign in to keep collecting points.',
+      children: [
+        if (!finishingProfile) ...[
+          _ModeSwitch(
+            signUp: isSignUpMode,
+            onChanged: (signUp) {
+              setState(() {
+                isSignUpMode = signUp;
+                errorMessage = null;
+              });
+            },
+          ),
+          const SizedBox(height: 20),
+        ],
 
-            if (showSignUp)
-              TextField(
-                controller: usernameController,
-                decoration: const InputDecoration(
-                  labelText: 'Username (for friends to find you)',
-                ),
-              ),
-            const SizedBox(height: 12),
-
-            if (showSignUp)
-              InkWell(
-                onTap: () async {
-                  DateTime? picked = await showDatePicker(
-                    context: context,
-                    initialDate: DateTime.now().subtract(
-                      const Duration(days: 365 * 25),
-                    ),
-                    firstDate: DateTime(1900),
-                    lastDate: DateTime.now(),
-                  );
-                  if (picked != null) {
-                    setState(() => dateOfBirth = picked);
-                  }
-                },
-                child: InputDecorator(
-                  decoration: const InputDecoration(labelText: 'Date of birth'),
-                  child: Text(
-                    dateOfBirth == null
-                        ? 'Tap to select'
-                        : '${dateOfBirth!.month}/${dateOfBirth!.day}/${dateOfBirth!.year}',
-                  ),
-                ),
-              ),
-            const SizedBox(height: 12),
-
-            if (!finishingProfile) ...[
-              TextField(
-                controller: emailController,
-                decoration: const InputDecoration(labelText: 'Email'),
-                keyboardType: TextInputType.emailAddress,
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: passwordController,
-                decoration: const InputDecoration(labelText: 'Password'),
-                obscureText: true,
-              ),
-              const SizedBox(height: 8),
-            ],
-
-            if (showSignUp)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 8),
-                child: Text(
-                  'We\'ll use your current location as your home city. '
-                  'You can change this once a year.',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-              ),
-
-            if (errorMessage != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  errorMessage!,
-                  style: const TextStyle(color: Colors.red),
-                ),
-              ),
-
-            ElevatedButton(
-              onPressed: isLoading ? null : _handleSubmit,
-              child: isLoading
-                  ? const CircularProgressIndicator()
-                  : Text(
-                      finishingProfile
-                          ? 'Finish Sign Up'
-                          : showSignUp
-                          ? 'Create Account'
-                          : 'Log In',
-                    ),
+        if (showSignUp) ...[
+          TextField(
+            controller: nameController,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Name',
+              prefixIcon: Icon(Icons.badge_outlined),
             ),
-
-            if (finishingProfile)
-              TextButton(
-                onPressed: () => auth.signOut(),
-                child: const Text('Use a different account'),
-              )
-            else
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    isSignUpMode = !isSignUpMode;
-                    errorMessage = null;
-                  });
-                },
-                child: Text(
-                  isSignUpMode
-                      ? 'Already have an account? Log In'
-                      : 'Need an account? Sign Up',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: usernameController,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: 'Username',
+              helperText: 'Friends find you by this.',
+              prefixIcon: Icon(Icons.alternate_email_rounded),
+            ),
+          ),
+          const SizedBox(height: 12),
+          InkWell(
+            borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+            onTap: () async {
+              DateTime? picked = await showDatePicker(
+                context: context,
+                initialDate: DateTime.now().subtract(
+                  const Duration(days: 365 * 25),
+                ),
+                firstDate: DateTime(1900),
+                lastDate: DateTime.now(),
+              );
+              if (picked != null) {
+                setState(() => dateOfBirth = picked);
+              }
+            },
+            child: InputDecorator(
+              decoration: const InputDecoration(
+                labelText: 'Date of birth',
+                prefixIcon: Icon(Icons.cake_outlined),
+                suffixIcon: Icon(Icons.calendar_month_rounded),
+              ),
+              child: Text(
+                dateOfBirth == null
+                    ? 'Tap to select'
+                    : '${dateOfBirth!.month}/${dateOfBirth!.day}/${dateOfBirth!.year}',
+                style: AppText.body(
+                  color: dateOfBirth == null ? AppColors.muted : AppColors.ink,
                 ),
               ),
-          ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+
+        if (!finishingProfile) ...[
+          TextField(
+            controller: emailController,
+            keyboardType: TextInputType.emailAddress,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              prefixIcon: Icon(Icons.mail_outline_rounded),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: passwordController,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Password',
+              prefixIcon: Icon(Icons.lock_outline_rounded),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+
+        if (showSignUp) ...[
+          const AuthNote(
+            icon: Icons.home_rounded,
+            color: AppColors.sky,
+            text: 'We\'ll use your current location as your home city. '
+                'You can change this once a year.',
+          ),
+          const SizedBox(height: 16),
+        ],
+
+        if (errorMessage != null) ...[
+          ErrorNote(message: errorMessage!),
+          const SizedBox(height: 16),
+        ],
+
+        ElevatedButton(
+          onPressed: isLoading ? null : _handleSubmit,
+          child: isLoading
+              ? const AuthButtonSpinner()
+              : Text(
+                  finishingProfile
+                      ? 'Finish'
+                      : showSignUp
+                      ? 'Create account'
+                      : 'Sign in',
+                ),
+        ),
+
+        if (finishingProfile) ...[
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: () => auth.signOut(),
+            child: const Text('Use a different account'),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// The Sign in / Create account pill switch at the top of the form.
+class _ModeSwitch extends StatelessWidget {
+  final bool signUp;
+  final ValueChanged<bool> onChanged;
+
+  const _ModeSwitch({required this.signUp, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: const ShapeDecoration(color: AppColors.lightPurple, shape: StadiumBorder()),
+      child: Row(
+        children: [
+          _option('Sign in', selected: !signUp, value: false),
+          _option('Create account', selected: signUp, value: true),
+        ],
+      ),
+    );
+  }
+
+  Widget _option(String label, {required bool selected, required bool value}) {
+    return Expanded(
+      child: Material(
+        color: selected ? AppColors.card : Colors.transparent,
+        shape: const StadiumBorder(),
+        elevation: selected ? 1 : 0,
+        shadowColor: AppColors.ink.withValues(alpha: 0.2),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: selected ? null : () => onChanged(value),
+          child: SizedBox(
+            height: AppShapes.minTapTarget,
+            child: Center(
+              child: Text(
+                label,
+                style: AppText.heading(
+                  size: 16,
+                  weight: FontWeight.w600,
+                  color: selected ? AppColors.purple : AppColors.muted,
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
+  }
+}
+
+/// The layout shared by the sign-in and phone screens: a coloured header
+/// with decorative circles and a big icon, then the form in a white card
+/// that overlaps it. Scrolls, so the keyboard never hides the button.
+class AuthPage extends StatelessWidget {
+  final Color color;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final List<Widget> children;
+
+  const AuthPage({
+    super.key,
+    required this.color,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    double top = MediaQuery.of(context).padding.top;
+    Color onColor = AppColors.onColor(color);
+    Color circle = color == AppColors.purple ? AppColors.coral : AppColors.purple;
+
+    return Scaffold(
+      body: SingleChildScrollView(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(AppShapes.cardRadius * 1.5)),
+                  ),
+                  child: Stack(
+                    children: [
+                      const Positioned(right: -50, top: -40, child: DecorCircle(size: 180, color: AppColors.yellow)),
+                      Positioned(
+                        left: -50,
+                        bottom: -40,
+                        child: DecorCircle(size: 160, color: Colors.white.withValues(alpha: 0.2)),
+                      ),
+                      Positioned(right: 150, top: top + 32, child: DecorCircle(size: 22, color: circle)),
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(24, top + 28, 24, 64),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Chekkin', style: AppText.heading(size: 20, color: onColor)),
+                            const SizedBox(height: 20),
+                            Container(
+                              width: 72,
+                              height: 72,
+                              decoration: BoxDecoration(
+                                color: AppColors.card,
+                                borderRadius: BorderRadius.circular(24),
+                                boxShadow: AppShapes.softShadow,
+                              ),
+                              child: Icon(icon, size: 38, color: color == AppColors.purple ? AppColors.purple : AppColors.ink),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(title, style: AppText.heading(size: 30, color: onColor)),
+                            const SizedBox(height: 6),
+                            Text(subtitle, style: AppText.body(size: 16, color: onColor)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Transform.translate(
+                  offset: const Offset(0, -36),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: AppColors.card,
+                      borderRadius: BorderRadius.circular(AppShapes.cardRadius),
+                      boxShadow: AppShapes.softShadow,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: children,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A short explanation in a light tint of [color], with an icon square.
+class AuthNote extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String text;
+
+  const AuthNote({super.key, required this.icon, required this.color, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(AppShapes.fieldRadius),
+      ),
+      child: Row(
+        children: [
+          IconSquare(color: color, icon: icon, size: 40),
+          const SizedBox(width: 12),
+          Expanded(child: Text(text, style: AppText.body(size: 14))),
+        ],
+      ),
+    );
+  }
+}
+
+/// The spinner inside a busy (disabled) button.
+class AuthButtonSpinner extends StatelessWidget {
+  const AuthButtonSpinner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(strokeWidth: 2.5));
   }
 }
