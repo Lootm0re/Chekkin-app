@@ -1491,6 +1491,168 @@ exports.getBusinessStats = onCall(async (request) => {
 });
 
 // ---------------------------------------------------------------------------
+// Founding Partner offer
+//
+// The first FOUNDING_PARTNER_LIMIT businesses to become partners (approved,
+// with a plan) are Founding Partners: free for FOUNDING_FREE_MONTHS from that
+// day on any plan, then FOUNDING_DISCOUNT_TIERS get 50% off for
+// FOUNDING_DISCOUNT_MONTHS more. The plan that counts for the discount is
+// the one at the end of the free months, so discountUntil follows plan
+// changes until then. The owner can cancel at any time (cancelFoundingOffer);
+// that keeps the founding number. Numbers come from counters/foundingPartners
+// in a transaction, so there are never more than the limit; after that, new
+// partners get foundingPartner: false. Only entitlement data for now: billing
+// (not built yet) will read these fields and charge nobody before then.
+// Business fields: foundingPartner, foundingNumber, freeUntil, discountUntil,
+// offerCancelledAt. Only functions write them (firestore.rules).
+// ---------------------------------------------------------------------------
+
+const FOUNDING_PARTNER_LIMIT = 50;
+const FOUNDING_FREE_MONTHS = 3;
+const FOUNDING_DISCOUNT_MONTHS = 3;
+const FOUNDING_DISCOUNT_TIERS = ['platinum', 'diamond'];
+
+/** The wall-clock date and time in TIME_ZONE at [ms]; month is 1 to 12. */
+function zonedParts(ms) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIME_ZONE, hourCycle: 'h23',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  }).formatToParts(new Date(ms));
+  return Object.fromEntries(parts.filter((p) => p.type !== 'literal').map((p) => [p.type, Number(p.value)]));
+}
+
+/**
+ * [ms] plus [months] calendar months at the same time of day in TIME_ZONE,
+ * on the month's last day if it's shorter: 30 Nov + 3 months is 28 Feb.
+ */
+function addMonths(ms, months) {
+  const p = zonedParts(ms);
+  const monthIndex = p.month - 1 + months;
+  const year = p.year + Math.floor(monthIndex / 12);
+  const month = ((monthIndex % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const wall = Date.UTC(year, month, Math.min(p.day, lastDay), p.hour, p.minute, p.second, ms % 1000);
+  // The instant that shows that wall-clock time; twice, in case summer time
+  // starts or ends in between.
+  let result = wall;
+  for (let i = 0; i < 2; i++) {
+    const q = zonedParts(result);
+    result += wall - Date.UTC(q.year, q.month - 1, q.day, q.hour, q.minute, q.second, result % 1000);
+  }
+  return result;
+}
+
+function foundingDiscountUntil(tier, freeUntilMs) {
+  return FOUNDING_DISCOUNT_TIERS.includes(tier) ? Timestamp.fromMillis(addMonths(freeUntilMs, FOUNDING_DISCOUNT_MONTHS)) : null;
+}
+
+/** Whether a write to a business can change its offer, to skip the transaction for codeSeq and the like. */
+function mayChangeFoundingOffer(before, after) {
+  const founding = after.get('foundingPartner');
+  if (founding === undefined) return partnerTier(after) !== null;
+  return founding === true && !after.get('offerCancelledAt') &&
+    (before?.get('tier') !== after.get('tier') || before?.get('status') !== after.get('status'));
+}
+
+/**
+ * Gives a new partner the next founding number while there are any left, or
+ * updates a founding partner's discountUntil for a plan change before its free
+ * months end. [now] is when the business changed. Returns the fields written,
+ * or null.
+ */
+async function updateFoundingOffer(db, placeId, now) {
+  const businessRef = db.collection('businesses').doc(placeId);
+  const counterRef = db.collection('counters').doc('foundingPartners');
+  return db.runTransaction(async (tx) => {
+    const businessDoc = await tx.get(businessRef);
+    if (!businessDoc.exists) return null;
+    const tier = partnerTier(businessDoc);
+
+    if (businessDoc.get('foundingPartner') === undefined) {
+      if (!tier) return null; // not a partner yet
+      const counter = await tx.get(counterRef);
+      const taken = counter.exists ? counter.get('count') ?? 0 : 0;
+      if (taken >= FOUNDING_PARTNER_LIMIT) {
+        tx.update(businessRef, { foundingPartner: false });
+        return { foundingPartner: false };
+      }
+      const freeUntil = addMonths(now, FOUNDING_FREE_MONTHS);
+      const update = {
+        foundingPartner: true,
+        foundingNumber: taken + 1,
+        freeUntil: Timestamp.fromMillis(freeUntil),
+      };
+      const discountUntil = foundingDiscountUntil(tier, freeUntil);
+      if (discountUntil) update.discountUntil = discountUntil;
+      tx.set(counterRef, { count: taken + 1, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      tx.update(businessRef, update);
+      return update;
+    }
+
+    // A plan change: the plan when the free months end decides the discount.
+    if (businessDoc.get('foundingPartner') !== true || businessDoc.get('offerCancelledAt')) return null;
+    const freeUntil = businessDoc.get('freeUntil')?.toMillis();
+    if (!freeUntil || now >= freeUntil) return null;
+    const discountUntil = foundingDiscountUntil(tier, freeUntil);
+    const current = businessDoc.get('discountUntil') ?? null;
+    if (discountUntil?.toMillis() === current?.toMillis()) return null;
+    const update = { discountUntil: discountUntil ?? FieldValue.delete() };
+    tx.update(businessRef, update);
+    return { discountUntil };
+  });
+}
+
+exports.foundingPartnerOffer = onDocumentWritten({
+  document: 'businesses/{placeId}',
+  region: 'europe-north1',
+}, async (event) => {
+  const after = event.data?.after;
+  if (!after?.exists || !mayChangeFoundingOffer(event.data.before, after)) return;
+  const placeId = event.params.placeId;
+  const now = Date.parse(event.time) || Date.now();
+  const update = await updateFoundingOffer(getFirestore(), placeId, now);
+  if (update) {
+    logger.info('foundingPartnerOffer', {
+      placeId,
+      foundingPartner: update.foundingPartner,
+      foundingNumber: update.foundingNumber,
+      freeUntil: update.freeUntil?.toDate().toISOString(),
+      discountUntil: update.discountUntil === undefined ? undefined : update.discountUntil?.toDate().toISOString() ?? null,
+    });
+  }
+});
+
+/** Cancels the caller's Founding Partner offer for a place, straight away. The founding number stays. */
+exports.cancelFoundingOffer = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage your business.');
+  }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, 'cancelFoundingOffer');
+  const placeId = readPlaceId(request.data?.placeId);
+  const businessRef = db.collection('businesses').doc(placeId);
+
+  const cancelledAt = await db.runTransaction(async (tx) => {
+    const businessDoc = await tx.get(businessRef);
+    if (!businessDoc.exists || businessDoc.get('ownerUid') !== uid) {
+      throw new HttpsError('permission-denied', 'You don\'t manage this place.');
+    }
+    if (businessDoc.get('foundingPartner') !== true) {
+      throw new HttpsError('failed-precondition', `${businessDoc.get('placeName')} doesn't have the Founding Partner offer.`);
+    }
+    const already = businessDoc.get('offerCancelledAt');
+    if (already) return already;
+    const now = Timestamp.now();
+    tx.update(businessRef, { offerCancelledAt: now });
+    return now;
+  });
+
+  logger.info('cancelFoundingOffer', { uid, placeId, cancelledAt: cancelledAt.toDate().toISOString() });
+  return { cancelledAt: cancelledAt.toMillis() };
+});
+
+// ---------------------------------------------------------------------------
 // Business leaderboard
 //
 // Partner places are ranked by check-ins this month: placeBudgets'

@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
@@ -494,6 +495,142 @@ class _EmptyNote extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+const List<String> _monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/// "22 Jan 2027".
+String formatDate(DateTime date) => '${date.day} ${_monthNames[date.month - 1]} ${date.year}';
+
+/// A business's Founding Partner offer (businesses/{placeId}, written by the
+/// foundingPartnerOffer function): free until [freeUntil] on any plan, then
+/// 50% off until [discountUntil] on Platinum and Diamond.
+class FoundingOffer {
+  final int number;
+  final DateTime freeUntil;
+  final DateTime? discountUntil;
+
+  const FoundingOffer({required this.number, required this.freeUntil, this.discountUntil});
+
+  /// The offer while it still runs; null if there's none, it was cancelled
+  /// or it's over.
+  static FoundingOffer? of(Map data, {DateTime? now}) {
+    if (data['foundingPartner'] != true || data['offerCancelledAt'] != null) return null;
+    Object? number = data['foundingNumber'], freeUntil = data['freeUntil'], discountUntil = data['discountUntil'];
+    if (number is! num || freeUntil is! Timestamp) return null;
+    var offer = FoundingOffer(
+      number: number.toInt(),
+      freeUntil: freeUntil.toDate(),
+      discountUntil: discountUntil is Timestamp ? discountUntil.toDate() : null,
+    );
+    return (offer.discountUntil ?? offer.freeUntil).isAfter(now ?? DateTime.now()) ? offer : null;
+  }
+
+  bool get free => freeUntil.isAfter(DateTime.now());
+}
+
+/// "Founding Partner #N: free until (date), cancel anytime", the 50% off for
+/// Platinum and Diamond, and a Cancel button that asks first. Cancelling
+/// (cancelFoundingOffer) takes effect straight away; the card then goes.
+class FoundingPartnerCard extends StatefulWidget {
+  final String placeId;
+  final String placeName;
+  final FoundingOffer offer;
+
+  const FoundingPartnerCard({super.key, required this.placeId, required this.placeName, required this.offer});
+
+  @override
+  State<FoundingPartnerCard> createState() => _FoundingPartnerCardState();
+}
+
+class _FoundingPartnerCardState extends State<FoundingPartnerCard> {
+  bool cancelling = false;
+  String? error;
+
+  Future<void> _cancel() async {
+    FoundingOffer offer = widget.offer;
+    bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel the Founding Partner offer?'),
+        content: Text(
+          'It ends straight away for ${widget.placeName}, with no fee, and can\'t be restarted. '
+          'You keep Founding Partner #${offer.number}.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Keep offer')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.coral, foregroundColor: AppColors.ink),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Cancel offer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || cancelling) return;
+
+    setState(() {
+      cancelling = true;
+      error = null;
+    });
+    try {
+      await cloudFunctions.httpsCallable('cancelFoundingOffer').call({'placeId': widget.placeId});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Founding Partner offer cancelled.')),
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) setState(() => error = e.message ?? 'Couldn\'t cancel the offer.');
+    } catch (e) {
+      debugPrint('Cancelling the founding offer failed: $e');
+      if (mounted) setState(() => error = 'Couldn\'t cancel the offer. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => cancelling = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    FoundingOffer offer = widget.offer;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _CardHeading(
+              icon: Icons.workspace_premium_rounded,
+              color: AppColors.yellow,
+              title: 'Founding Partner #${offer.number}',
+              subtitle: offer.free
+                  ? 'Free until ${formatDate(offer.freeUntil)}, cancel anytime'
+                  : 'Free months ended ${formatDate(offer.freeUntil)}, cancel anytime',
+            ),
+            if (offer.discountUntil != null) ...[
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ColorChip(
+                  label: '50% off until ${formatDate(offer.discountUntil!)}',
+                  color: AppColors.coral,
+                  icon: Icons.local_offer_rounded,
+                ),
+              ),
+            ],
+            if (error != null) ...[const SizedBox(height: 14), ErrorNote(message: error!)],
+            const SizedBox(height: 16),
+            OutlinedButton(
+              onPressed: cancelling ? null : _cancel,
+              child: cancelling
+                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 3))
+                  : const Text('Cancel offer'),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -13,11 +13,34 @@
 //
 // Billing will set the same businesses/{placeId}.tier field later, so keep
 // this script and that field as they are.
+//
+// Founding Partner offer: the first 50 businesses to become partners
+// (approved, with a tier) get any plan free for 3 months, cancellable at any
+// time; Platinum and Diamond then get 50% off for 3 more months. The
+// foundingPartnerOffer function hands out the numbers when a tier is first
+// set here, and works out the discount from the tier at the end of the free
+// months, so a tier change before then moves the discount with it. `list`
+// shows each place's offer. Nobody is charged yet: billing isn't built.
 
 const { FieldValue } = require('@google-cloud/firestore'); // installed with firebase-admin
 const { cliFirestore } = require('./cli-firestore');
 
 const TIERS = { basic: 100, premium: 500, platinum: 1500, diamond: null };
+
+function formatDate(timestamp) {
+  return timestamp ? timestamp.toDate().toISOString().slice(0, 10) : '';
+}
+
+/** E.g. 'founding #3, free until 2027-01-22, 50% off until 2027-04-22'. */
+function foundingOffer(business) {
+  if (business.get('foundingPartner') !== true) return '';
+  return [
+    `founding #${business.get('foundingNumber')}`,
+    `free until ${formatDate(business.get('freeUntil'))}`,
+    business.get('discountUntil') ? `50% off until ${formatDate(business.get('discountUntil'))}` : '',
+    business.get('offerCancelledAt') ? `cancelled ${formatDate(business.get('offerCancelledAt'))}` : '',
+  ].filter(Boolean).join(', ');
+}
 
 function thisMonth() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit' })
@@ -41,6 +64,7 @@ async function list(db) {
       business.id,
       `${business.get('placeName')} (${business.get('category')})`,
       tier ? `${used}${budget === null ? '' : `/${budget}`} check-ins in ${month}` : '',
+      foundingOffer(business),
     ].join('  '));
   });
 }
@@ -56,6 +80,12 @@ async function set(db, placeId, tier) {
   }
   await ref.update({ tier, tierSetAt: FieldValue.serverTimestamp() });
   console.log(`${business.get('placeName')} is now a ${tier} partner.`);
+  if (business.get('foundingPartner') === undefined) {
+    console.log('If Founding Partner numbers are left, it gets the next one in a moment (see `list`).');
+  } else if (business.get('foundingPartner') === true && !business.get('offerCancelledAt') &&
+      business.get('freeUntil')?.toMillis() > Date.now()) {
+    console.log('Still in its free months, so its Founding Partner discount follows the new tier.');
+  }
 }
 
 async function remove(db, placeId) {

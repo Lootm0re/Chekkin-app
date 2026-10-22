@@ -88,6 +88,12 @@ class BusinessScreen extends StatelessWidget {
                   for (var doc in docs) ...[
                     _BusinessCard(placeId: doc.id, data: doc.data() as Map<String, dynamic>),
                     if (_isPartner(doc.data() as Map)) ...[
+                      if (FoundingOffer.of(doc.data() as Map) case var offer?)
+                        FoundingPartnerCard(
+                          placeId: doc.id,
+                          placeName: (doc.data() as Map)['placeName'] ?? 'your place',
+                          offer: offer,
+                        ),
                       CheckInCodesCard(placeId: doc.id, codeSeq: (doc.data() as Map)['codeSeq']),
                       BusinessLeagueCard(placeId: doc.id, codeSeq: (doc.data() as Map)['codeSeq']),
                     ],

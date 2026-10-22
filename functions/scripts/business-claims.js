@@ -8,7 +8,8 @@
 // Approving creates the place's code secret. Check-ins open once it also has
 // a partner tier (scripts/partner-tiers.js), and need the code shown in the
 // owner's app. Rejecting closes check-ins there again, and lets anyone claim
-// it.
+// it. The Founding Partner offer starts when a place becomes a partner (see
+// partner-tiers.js).
 
 const crypto = require('crypto');
 const { FieldValue } = require('@google-cloud/firestore'); // installed with firebase-admin
