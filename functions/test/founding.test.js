@@ -16,6 +16,7 @@ if (!EMULATOR || !PROJECT.startsWith('demo-')) {
 
 const { foundingPartnerOffer, cancelFoundingOffer } = require('../index.js');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
+const { asUser } = require('./as-user');
 
 const db = getFirestore();
 const ANDROID_APP_ID = '1:929780239850:android:528c6d1770ddd6cd45f693';
@@ -221,27 +222,6 @@ test('only the owner can cancel, and only an offer that exists', async () => {
 });
 
 // --- Rules -----------------------------------------------------------------------------
-
-/** An unsigned ID token, which the emulator accepts, so requests go through the rules like the app's. */
-function idToken(uid) {
-  const encode = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
-  const now = Math.floor(Date.now() / 1000);
-  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode({
-    iss: `https://securetoken.google.com/${PROJECT}`, aud: PROJECT, sub: uid, user_id: uid,
-    iat: now, exp: now + 3600, auth_time: now, firebase: { sign_in_provider: 'password' },
-  })}.`;
-}
-
-function asUser(uid, path, { method = 'GET', fields } = {}) {
-  let url = `http://${EMULATOR}/v1/projects/${PROJECT}/databases/(default)/documents/${path}`;
-  const options = { method, headers: { Authorization: `Bearer ${idToken(uid)}` } };
-  if (fields) {
-    url += '?' + Object.keys(fields).map((f) => `updateMask.fieldPaths=${f}`).join('&');
-    options.body = JSON.stringify({ fields });
-    options.headers['Content-Type'] = 'application/json';
-  }
-  return fetch(url, options);
-}
 
 test('rules: owners read their offer, but only the server can write it or the counter', async () => {
   await becomePartner('cafe', 'platinum', NOW);

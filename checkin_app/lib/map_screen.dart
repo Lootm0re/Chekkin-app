@@ -349,7 +349,12 @@ class _MapScreenState extends State<MapScreen> {
   /// Checks in at [place] with the staff's [code] (partner places) and
   /// [friendUids] to invite. On success the card closes and a group check-in
   /// shows its progress; the caller shows the confirmation.
-  Future<CheckInOutcome> _performCheckIn(CheckInPlace place, {String? code, List<String> friendUids = const []}) async {
+  Future<CheckInOutcome> _performCheckIn(
+    CheckInPlace place, {
+    String? code,
+    String? stickerToken,
+    List<String> friendUids = const [],
+  }) async {
     // The position from when the place was picked may be minutes old, and the
     // server only accepts a recent one.
     Position position = currentPosition!;
@@ -364,7 +369,8 @@ class _MapScreenState extends State<MapScreen> {
       final response = await callable.call(withEmulatorPlaces({
         'placeId': place.id,
         ..._deviceFix(position),
-        if (place.requiresCode) 'code': code ?? '',
+        if (place.requiresCode && stickerToken != null) 'stickerToken': stickerToken,
+        if (place.requiresCode && stickerToken == null) 'code': code ?? '',
         if (place.requiresCode && friendUids.isNotEmpty) 'friendUids': friendUids,
       }));
       String? groupId = response.data['groupId'];
@@ -391,7 +397,8 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   /// The card's Check in button: places without a code check in right
-  /// here; partner places open PlaceScreen for the code and friends.
+  /// here; partner places open PlaceScreen for the sticker or code, and
+  /// friends.
   Future<void> _onCheckInPressed() async {
     CheckInPlace? place = selectedPlace;
     if (place == null || isCheckingIn) return;
@@ -401,8 +408,8 @@ class _MapScreenState extends State<MapScreen> {
         builder: (_) => PlaceScreen(
           place: place,
           distanceMeters: selectedDistance,
-          onCheckIn: ({required code, required friendUids}) =>
-              _performCheckIn(place, code: code, friendUids: friendUids),
+          onCheckIn: ({code, stickerToken, required friendUids}) =>
+              _performCheckIn(place, code: code, stickerToken: stickerToken, friendUids: friendUids),
         ),
       ));
       if (outcome != null && mounted) _showOutcome(outcome);

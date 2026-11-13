@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera is used to scan the table sticker when you check in at a place.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location is used to set your home city and find nearby places to check in.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>

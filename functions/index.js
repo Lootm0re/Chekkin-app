@@ -801,8 +801,9 @@ async function readGroupFriends(db, uid, value) {
  * The caller must be within CHECK_IN_RANGE_METERS of it, at most once every
  * CHECK_IN_COOLDOWN_HOURS and MAX_CHECK_INS_PER_PLACE_PER_WEEK times a week.
  * Businesses must be partners (see Partners): the caller gives the staff's
- * current code, which then can't be used again, and may invite friends
- * (friendUids) to join as a group.
+ * current code, which then can't be used again, or scans a table sticker
+ * (stickerToken, see Table stickers), and may invite friends (friendUids) to
+ * join as a group.
  */
 exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   const uid = request.auth?.uid;
@@ -860,7 +861,11 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
   throwIfCheckInLimitReached(lastBefore, place);
   throwIfRepeatGroup(lastBefore, friendUids, place);
   if (!devTester) throwIfImpossibleTravel(await userRef.get(), place);
-  if (tier) {
+  // The staff's code, or a table sticker in its place: the only step that differs.
+  const via = !tier ? null : request.data?.stickerToken !== undefined ? 'sticker' : 'code';
+  if (via === 'sticker') {
+    await useTableSticker(db, uid, place, request.data.stickerToken);
+  } else if (via === 'code') {
     await useBusinessCode(db, uid, place, request.data?.code);
   }
 
@@ -895,7 +900,7 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
     tx.set(lastCheckInRef, placeCheckInUpdate(lastDoc), { merge: true });
     tx.set(checkInRef, {
       uid, placeId, placeName: place.name, tier, basePoints: base, points, distanceMeters: Math.round(distance),
-      createdAt: now, ...(groupRef ? { groupId: groupRef.id } : {}),
+      ...(via ? { via } : {}), createdAt: now, ...(groupRef ? { groupId: groupRef.id } : {}),
     });
     tx.update(userRef, { lastCheckIn: lastCheckInOf(place) });
 
@@ -932,7 +937,7 @@ exports.performCheckIn = onCall(LOCATION_CALLABLE, async (request) => {
     return { pointsEarned: points, capped: points < base, budgetUsedUp: !!tier && budgetUsedUp(tier, budgetDoc) };
   });
 
-  logger.info('Checked in', { uid, placeId, tier, ...result, groupId: groupRef?.id, invited: friendUids.length });
+  logger.info('Checked in', { uid, placeId, tier, via, ...result, groupId: groupRef?.id, invited: friendUids.length });
   return {
     ...result,
     placeName: place.name,
@@ -1322,6 +1327,230 @@ async function useBusinessCode(db, uid, place, code) {
   logger.info('Wrong business code', { uid, placeId: place.id, result });
   throwWrongCode(result, `Too many wrong codes for ${place.name}.`, 'That code isn\'t right, has expired or has already been used.');
 }
+
+// ---------------------------------------------------------------------------
+// Table stickers
+//
+// A sticker on a table replaces the staff's code: the guest scans it and
+// performCheckIn runs every other check as usual (location, limits, owner,
+// budget). The QR holds a token signed with the place's sticker key
+// (businessSecrets/{placeId}.stickerKey, never sent to the app): place id,
+// sticker id, table label and the place's sticker version. No code, nothing
+// about anyone. "Reset all stickers" raises the version, so printed stickers
+// stop working and the same tables get new ones to print. A sticker is
+// public once printed, so it only proves the guest saw it, not where they
+// are: the location checks still do that. Wrong stickers count towards the
+// same lockout as wrong codes, and scans are limited per sticker and per
+// user.
+// ---------------------------------------------------------------------------
+
+const STICKER_TOKEN_PREFIX = 'CHK1';
+const STICKER_SIGNATURE_BYTES = 16;
+const MAX_STICKER_LABEL_LENGTH = 30;
+const MAX_STICKERS_PER_PLACE = 200;
+const MAX_STICKER_CHECK_INS_PER_HOUR = 30; // per sticker
+const MAX_STICKER_SCANS_PER_USER_PER_HOUR = 10; // valid or not
+
+function stickersRef(db, placeId) {
+  return db.collection('businessSecrets').doc(placeId).collection('stickers');
+}
+
+function stickerSignature(key, payload) {
+  return crypto.createHmac('sha256', Buffer.from(key, 'base64'))
+    .update(`${STICKER_TOKEN_PREFIX}.${payload}`).digest().subarray(0, STICKER_SIGNATURE_BYTES);
+}
+
+/** The text in a sticker's QR code: 'CHK1.<payload>.<signature>', both base64url. */
+function stickerToken(key, { placeId, stickerId, label, version }) {
+  const payload = Buffer.from(JSON.stringify({ p: placeId, s: stickerId, t: label, v: version })).toString('base64url');
+  return `${STICKER_TOKEN_PREFIX}.${payload}.${stickerSignature(key, payload).toString('base64url')}`;
+}
+
+/** What a scanned token claims, unverified, or null if it isn't a sticker token. */
+function readStickerToken(value) {
+  if (typeof value !== 'string' || value.length > 500) return null;
+  const parts = value.trim().split('.');
+  if (parts.length !== 3 || parts[0] !== STICKER_TOKEN_PREFIX) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (typeof claims?.p !== 'string' || typeof claims.s !== 'string' || !Number.isInteger(claims.v)) return null;
+    return { placeId: claims.p, stickerId: claims.s, label: claims.t, version: claims.v, payload: parts[1], signature: parts[2] };
+  } catch {
+    return null;
+  }
+}
+
+function stickerSignatureValid(key, token) {
+  const given = Buffer.from(token.signature, 'base64url');
+  const expected = stickerSignature(key, token.payload);
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+}
+
+/** Minutes until the next UTC hour, when the hourly scan limits start again. */
+function minutesToNextHour() {
+  return 60 - new Date().getUTCMinutes();
+}
+
+/** Logs and raises an alert (once an hour per sticker) when a sticker hits its hourly limit. */
+async function reportStickerLimit(db, uid, place, stickerId, label) {
+  const hour = hourKey(Date.now());
+  const details = { placeId: place.id, placeName: place.name, stickerId, label, uid, limit: MAX_STICKER_CHECK_INS_PER_HOUR, hour };
+  logger.warn('Table sticker hourly limit reached', details);
+  try {
+    await db.collection('alerts').doc(`${place.id}_${hour}_sticker_${stickerId}`).create({
+      type: 'stickerHourlyLimit', ...details, createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    if (err.code !== 6) throw err; // ALREADY_EXISTS: flagged this hour already
+  }
+}
+
+/**
+ * Throws unless [tokenValue] is a current sticker of [place], within the
+ * hourly limits. Wrong, old and other places' stickers count as wrong codes
+ * (same lockout); every scan counts towards the user's hourly limit.
+ * Returns the sticker's id.
+ */
+async function useTableSticker(db, uid, place, tokenValue) {
+  const token = readStickerToken(tokenValue);
+  const secretRef = db.collection('businessSecrets').doc(place.id);
+  const attemptsRef = db.collection('users').doc(uid).collection('codeAttempts').doc(place.id);
+  const scansRef = db.collection('users').doc(uid).collection('stickerScans').doc('quota');
+  const stickerRef = token?.placeId === place.id && /^[A-Za-z0-9]{1,40}$/.test(token.stickerId)
+    ? stickersRef(db, place.id).doc(token.stickerId) : null;
+
+  const result = await db.runTransaction(async (tx) => {
+    const [attempts, scans, secretDoc, stickerDoc] = await Promise.all([
+      tx.get(attemptsRef), tx.get(scansRef), tx.get(secretRef), stickerRef ? tx.get(stickerRef) : null,
+    ]);
+    const now = Date.now();
+    const failures = codeFailuresOf(attempts, now);
+    const lockout = codeLockout(failures, now);
+    if (lockout) return lockout;
+
+    const hour = hourKey(now);
+    const scansThisHour = scans.exists && scans.get('hour') === hour ? scans.get('count') ?? 0 : 0;
+    if (scansThisHour >= MAX_STICKER_SCANS_PER_USER_PER_HOUR) return { userLimited: true };
+    tx.set(scansRef, { hour, count: scansThisHour + 1 });
+
+    const key = secretDoc.exists ? secretDoc.get('stickerKey') : null;
+    let reason = null;
+    if (!token) reason = 'notSticker';
+    else if (token.placeId !== place.id) reason = 'otherPlace';
+    else if (!key || !stickerDoc?.exists || !stickerSignatureValid(key, token)) reason = 'invalid';
+    else if (token.version !== (secretDoc.get('stickerVersion') ?? 1)) reason = 'replaced';
+    if (reason) return { reason, ...countCodeFailure(tx, attemptsRef, failures) };
+
+    const usedThisHour = stickerDoc.get('hour') === hour ? stickerDoc.get('checkInsThisHour') ?? 0 : 0;
+    if (usedThisHour >= MAX_STICKER_CHECK_INS_PER_HOUR) return { stickerLimited: true, label: stickerDoc.get('label') };
+    tx.update(stickerRef, { hour, checkInsThisHour: usedThisHour + 1, lastUsedAt: Timestamp.fromMillis(now) });
+    return { correct: true, stickerId: token.stickerId };
+  });
+
+  if (result.correct) return result.stickerId;
+  if (result.userLimited) {
+    logger.warn('Table sticker scans per user limit reached', { uid, placeId: place.id, limit: MAX_STICKER_SCANS_PER_USER_PER_HOUR });
+    const minutes = minutesToNextHour();
+    throw new HttpsError('resource-exhausted',
+      `You've scanned a lot of stickers this hour. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}, ` +
+      'or ask the staff for a code.');
+  }
+  if (result.stickerLimited) {
+    await reportStickerLimit(db, uid, place, token.stickerId, result.label);
+    throw new HttpsError('resource-exhausted',
+      `This table sticker has been used a lot this hour, so it's paused for a while. Ask the staff at ${place.name} for a code instead.`);
+  }
+  logger.info('Wrong table sticker', { uid, placeId: place.id, stickerPlaceId: token?.placeId, result });
+  const wrong = {
+    notSticker: 'That isn\'t a Chekkin table sticker.',
+    otherPlace: `That sticker is for another place, not ${place.name}.`,
+    invalid: `That sticker isn't one of ${place.name}'s.`,
+    replaced: `That sticker has been replaced. Ask the staff at ${place.name} for a code.`,
+  }[result.reason] ?? 'That sticker didn\'t work.';
+  throwWrongCode(result, `Too many wrong codes or stickers for ${place.name}.`, wrong);
+}
+
+function readStickerLabel(value) {
+  const label = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  if (!label || label.length > MAX_STICKER_LABEL_LENGTH) {
+    throw new HttpsError('invalid-argument', `Give the table a name of 1 to ${MAX_STICKER_LABEL_LENGTH} characters, like "Table 4".`);
+  }
+  return label;
+}
+
+/** The stickers of an approved place the caller manages, with the tokens to print. */
+async function listTableStickers(db, placeId) {
+  const [secretDoc, stickers] = await Promise.all([
+    db.collection('businessSecrets').doc(placeId).get(),
+    stickersRef(db, placeId).orderBy('createdAt').get(),
+  ]);
+  const key = secretDoc.get('stickerKey');
+  const version = secretDoc.get('stickerVersion') ?? 1;
+  return {
+    version,
+    maxStickers: MAX_STICKERS_PER_PLACE,
+    stickers: key ? stickers.docs.map((d) => ({
+      id: d.id,
+      label: d.get('label'),
+      token: stickerToken(key, { placeId, stickerId: d.id, label: d.get('label'), version }),
+    })) : [],
+  };
+}
+
+async function readOwnPartnerPlace(request, action) {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage your business.');
+  }
+  const db = getFirestore();
+  await throwUnlessFromApp(db, uid, request, action);
+  const placeId = readPlaceId(request.data?.placeId);
+  const businessDoc = await readOwnBusiness(db, uid, placeId);
+  return { db, uid, placeId, businessDoc };
+}
+
+/** Adds a sticker for a table (label, e.g. "Table 4") at a place the caller manages. */
+exports.createTableSticker = onCall(async (request) => {
+  const { db, uid, placeId } = await readOwnPartnerPlace(request, 'createTableSticker');
+  const label = readStickerLabel(request.data?.label);
+  const secretRef = db.collection('businessSecrets').doc(placeId);
+
+  await db.runTransaction(async (tx) => {
+    const [secretDoc, existing] = await Promise.all([tx.get(secretRef), tx.get(stickersRef(db, placeId))]);
+    if (existing.size >= MAX_STICKERS_PER_PLACE) {
+      throw new HttpsError('resource-exhausted', `A place can have up to ${MAX_STICKERS_PER_PLACE} stickers.`);
+    }
+    if (existing.docs.some((d) => d.get('label').toLowerCase() === label.toLowerCase())) {
+      throw new HttpsError('already-exists', `There's already a sticker for ${label}.`);
+    }
+    if (!secretDoc.get('stickerKey')) {
+      tx.set(secretRef, { stickerKey: crypto.randomBytes(32).toString('base64'), stickerVersion: 1 }, { merge: true });
+    }
+    tx.create(stickersRef(db, placeId).doc(), { label, createdAt: FieldValue.serverTimestamp(), createdBy: uid });
+  });
+  logger.info('createTableSticker', { uid, placeId, label });
+  return listTableStickers(db, placeId);
+});
+
+/** The stickers of a place the caller manages, each with its QR token. */
+exports.getTableStickers = onCall(async (request) => {
+  const { db, placeId, businessDoc } = await readOwnPartnerPlace(request, 'getTableStickers');
+  return { ...(await listTableStickers(db, placeId)), placeName: businessDoc.get('placeName') };
+});
+
+/** "Reset all stickers": every printed sticker of the place stops working; the same tables get new ones. */
+exports.resetTableStickers = onCall(async (request) => {
+  const { db, uid, placeId } = await readOwnPartnerPlace(request, 'resetTableStickers');
+  const secretRef = db.collection('businessSecrets').doc(placeId);
+  const version = await db.runTransaction(async (tx) => {
+    const secretDoc = await tx.get(secretRef);
+    const next = (secretDoc.get('stickerVersion') ?? 1) + 1;
+    tx.set(secretRef, { stickerVersion: next, stickersResetAt: FieldValue.serverTimestamp() }, { merge: true });
+    return next;
+  });
+  logger.info('resetTableStickers', { uid, placeId, version });
+  return listTableStickers(db, placeId);
+});
 
 /** Throws unless the caller manages this approved business; returns its document. */
 async function readOwnBusiness(db, uid, placeId) {

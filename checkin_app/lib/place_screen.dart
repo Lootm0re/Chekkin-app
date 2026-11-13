@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_only.dart';
 import 'check_in_place.dart';
 import 'group_check_in.dart';
+import 'table_stickers.dart';
 import 'theme.dart';
 
 /// What a check-in attempt came to, from MapScreen's check-in.
@@ -35,14 +36,17 @@ class CheckInOutcome {
   bool get succeeded => error == null;
 }
 
-/// Checking in at a partner business: the code from the staff, optional
+/// Checking in at a partner business: scanning the table sticker, or the
+/// code from the staff if there's none or the camera can't be used, optional
 /// friends for a group check-in, and the Check in button. Pops with the
 /// [CheckInOutcome] once a check-in works; on failure it stays, shows why and
 /// clears the code so it can be typed again.
 class PlaceScreen extends StatefulWidget {
   final CheckInPlace place;
   final double distanceMeters;
-  final Future<CheckInOutcome> Function({required String code, required List<String> friendUids}) onCheckIn;
+  /// Checks in with [code] or [stickerToken] (exactly one is set).
+  final Future<CheckInOutcome> Function({String? code, String? stickerToken, required List<String> friendUids})
+      onCheckIn;
 
   const PlaceScreen({super.key, required this.place, required this.distanceMeters, required this.onCheckIn});
 
@@ -68,14 +72,15 @@ class _PlaceScreenState extends State<PlaceScreen> {
     super.dispose();
   }
 
-  Future<void> _checkIn() async {
+  Future<void> _checkIn({String? stickerToken}) async {
     if (isCheckingIn) return;
     setState(() {
       isCheckingIn = true;
       checkInError = null;
     });
     CheckInOutcome outcome = await widget.onCheckIn(
-      code: codeController.text.trim(),
+      code: stickerToken == null ? codeController.text.trim() : null,
+      stickerToken: stickerToken,
       friendUids: groupFriends.keys.toList(),
     );
     if (!mounted) return;
@@ -88,6 +93,14 @@ class _PlaceScreenState extends State<PlaceScreen> {
       checkInError = outcome.error;
       codeController.clear();
     });
+  }
+
+  Future<void> _scan() async {
+    if (isCheckingIn) return;
+    String? token = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => ScanStickerScreen(placeName: widget.place.name)),
+    );
+    if (token != null && mounted) await _checkIn(stickerToken: token);
   }
 
   Future<void> _pickFriends() async {
@@ -132,7 +145,9 @@ class _PlaceScreenState extends State<PlaceScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       if (appOnlyFeaturesAvailable) ...[
-                        Text('Code from the staff', style: AppText.heading(size: 20)),
+                        _ScanCard(enabled: !isCheckingIn, onScan: _scan),
+                        const SizedBox(height: 24),
+                        Text('No sticker? Enter the code', style: AppText.heading(size: 20)),
                         const SizedBox(height: 4),
                         Text(
                           'Ask the staff at ${place.name} for an $codeLength-digit check-in code.',
@@ -307,6 +322,53 @@ class _InfoCard extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// The quickest way in: scan the sticker on the table.
+class _ScanCard extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback onScan;
+
+  const _ScanCard({required this.enabled, required this.onScan});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const IconSquare(color: AppColors.yellow, icon: Icons.qr_code_scanner_rounded, size: 52),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Scan the table sticker', style: AppText.heading(size: 20)),
+                      Text(
+                        'Look for "Scan to check in" on your table.',
+                        style: AppText.body(size: 15, color: AppColors.muted),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: const Text('Scan'),
+              onPressed: enabled ? onScan : null,
+            ),
+          ],
+        ),
       ),
     );
   }

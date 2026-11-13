@@ -180,6 +180,17 @@ const LEAGUE_PLACES = [
   ['emulatorDiamond2', 'Saluhallen', 'diamond', 'shop', 57, 140],
 ];
 
+/** Table stickers for [labels], as createTableSticker makes them (a signing key and version 1). */
+async function addStickers(place, labels) {
+  await db.doc(`businessSecrets/${place.id}`).set(
+    { stickerKey: crypto.randomBytes(32).toString('base64'), stickerVersion: 1 }, { merge: true });
+  for (const [i, label] of labels.entries()) {
+    await db.doc(`businessSecrets/${place.id}/stickers/emulatorSticker${i + 1}`).set({
+      label, createdAt: Timestamp.fromMillis(Date.now() - (labels.length - i) * 60000), createdBy: 'gaian',
+    });
+  }
+}
+
 async function addVoucher(code, place, { expiresInDays }) {
   const reward = CATALOG['restaurant-discount'];
   const now = Date.now();
@@ -208,6 +219,7 @@ async function main() {
     await addCheckIns(id, thisMonth, lastMonth);
   }
   await addMapPlaces();
+  await addStickers(LA_FLEUR, ['Table 1', 'Table 2', 'Terrace 1']);
   for (const [id, reward] of Object.entries(CATALOG)) await db.doc(`rewards/${id}`).set(reward);
   // Expired yesterday, at @gaian's place.
   await addVoucher('EXPDTEST', LA_FLEUR, { expiresInDays: -1 });
@@ -221,6 +233,7 @@ async function main() {
   console.log(`  partner2@chekkin.test  owns ${TRATTORIA.name} (Basic, 5th of 6)`);
   console.log(`Vouchers: EXPDTEST (expired, ${LA_FLEUR.name}), THERTEST (valid, ${TRATTORIA.name}).`);
   console.log('Map: test places around the "DEV: Go to the test places" button (flask) on the map.');
+  console.log(`Table stickers: Table 1, Table 2 and Terrace 1 at ${LA_FLEUR.name} (My Business > Table stickers).`);
 }
 
 main().catch((err) => { console.error(err.message); process.exit(1); });

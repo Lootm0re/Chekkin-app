@@ -160,7 +160,7 @@ class _CheckInCodesCardState extends State<CheckInCodesCard> {
               const SizedBox(height: 12),
             ],
             if (notice != null) ...[
-              _Notice(text: notice!),
+              SuccessNote(text: notice!),
               const SizedBox(height: 12),
             ],
             if (codes == null && error == null)
@@ -447,10 +447,10 @@ class _LeagueRow extends StatelessWidget {
 }
 
 /// A light mint confirmation line.
-class _Notice extends StatelessWidget {
+class SuccessNote extends StatelessWidget {
   final String text;
 
-  const _Notice({required this.text});
+  const SuccessNote({super.key, required this.text});
 
   @override
   Widget build(BuildContext context) {

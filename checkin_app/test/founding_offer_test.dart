@@ -44,6 +44,7 @@ Future<Fakes> setUpOffer(String tier, Map<String, Object?> offer) async {
     'averageGroupSize': 2.5,
   });
   fakes.functions.answer('getBusinessCodes', {'codes': [], 'activeCount': 0, 'lifetimeHours': 24});
+  fakes.functions.answer('getTableStickers', {'version': 1, 'stickers': []});
   fakes.functions.answer('getBusinessLeaderboard', {
     'month': '2026-10',
     'league': {'tiers': [tier], 'label': 'Platinum', 'size': 6},

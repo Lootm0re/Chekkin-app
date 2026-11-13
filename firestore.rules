@@ -61,8 +61,8 @@ service cloud.firestore {
         allow read, delete: if request.auth != null && request.auth.uid == uid;
       }
 
-      // placeCheckIns and codeAttempts (check-in functions) and redemptions
-      // (redeemReward): written by functions only.
+      // placeCheckIns, codeAttempts and stickerScans (check-in functions)
+      // and redemptions (redeemReward): written by functions only.
       match /{sub=**} {
         allow read, write: if false;
       }
@@ -117,8 +117,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // alerts, businessSecrets (with each place's check-in codes and code
-    // quota), buddyCheckins, checkIns, counters (foundingPartners: founding
+    // alerts, businessSecrets (with each place's check-in codes, code quota,
+    // and table stickers with their signing key and version: created and
+    // changed only by createTableSticker, resetTableStickers and
+    // performCheckIn; owners get them through getTableStickers),
+    // buddyCheckins, checkIns, counters (foundingPartners: founding
     // numbers given out), devTesters, placeBudgets (check-in
     // counts, also behind the business leaderboard), places, placesQuota,
     // phoneNumbers, voucherAttempts, and anything else.

@@ -57,6 +57,7 @@ Future<Fakes> setUpBusiness({required Map leaderboard, List<String> codes = cons
     return {'codes': created, 'expiresAt': expires};
   };
   fakes.functions.answer('getBusinessLeaderboard', leaderboard);
+  fakes.functions.answer('getTableStickers', {'version': 1, 'stickers': []});
   return fakes;
 }
 

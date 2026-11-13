@@ -10,6 +10,7 @@ import 'business_tools.dart';
 import 'check_in_place.dart';
 import 'emulators.dart';
 import 'location_access.dart';
+import 'table_stickers.dart';
 import 'theme.dart';
 
 /// For restaurant, café, hotel and shop owners: register a place, and once
@@ -94,6 +95,7 @@ class BusinessScreen extends StatelessWidget {
                           placeName: (doc.data() as Map)['placeName'] ?? 'your place',
                           offer: offer,
                         ),
+                      TableStickersCard(placeId: doc.id, placeName: (doc.data() as Map)['placeName'] ?? 'your place'),
                       CheckInCodesCard(placeId: doc.id, codeSeq: (doc.data() as Map)['codeSeq']),
                       BusinessLeagueCard(placeId: doc.id, codeSeq: (doc.data() as Map)['codeSeq']),
                     ],
